@@ -8,6 +8,12 @@
 #       by Keiju ISHITSUKA (Nippon Rational Inc.)
 #
 
+if ENV['USE_PRISM']
+  require_relative 'ripper_state_lex'
+  require_relative 'ruby_prism'
+  return
+end
+
 require 'ripper'
 require_relative 'ripper_state_lex'
 
