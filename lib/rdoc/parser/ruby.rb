@@ -1,21 +1,12 @@
 # frozen_string_literal: true
-##
-# This file contains stuff stolen outright from:
-#
-#   rtags.rb -
-#   ruby-lex.rb - ruby lexcal analyzer
-#   ruby-token.rb - ruby tokens
-#       by Keiju ISHITSUKA (Nippon Rational Inc.)
-#
 
+require 'prism'
 require 'ripper'
 require_relative 'ripper_state_lex'
 
 ##
 # Extracts code elements from a source file returning a TopLevel object
 # containing the constituent file elements.
-#
-# This file is based on rtags
 #
 # RubyParser understands how to document:
 # * classes
@@ -145,21 +136,8 @@ class RDoc::Parser::Ruby < RDoc::Parser
 
   parse_files_matching(/\.rbw?$/)
 
-  include RDoc::TokenStream
-  include RDoc::Parser::RubyTools
-
-  ##
-  # RDoc::NormalClass type
-
-  NORMAL = "::"
-
-  ##
-  # RDoc::SingleClass type
-
-  SINGLE = "<<"
-
-  ##
-  # Creates a new Ruby parser.
+  attr_accessor :visibility
+  attr_reader :container, :singleton
 
   def initialize(top_level, file_name, content, options, stats)
     super
@@ -169,2022 +147,41 @@ class RDoc::Parser::Ruby < RDoc::Parser
     @size = 0
     @token_listeners = nil
     content = RDoc::Encoding.remove_magic_comment content
-    @scanner = RDoc::Parser::RipperStateLex.parse(content)
     @content = content
-    @scanner_point = 0
-    @prev_seek = nil
     @markup = @options.markup
     @track_visibility = :nodoc != @options.visibility
     @encoding = @options.encoding
 
-    reset
+    @module_nesting = [top_level]
+    @container = top_level
+    @visibility = :public
+    @singleton = false
   end
 
-  ##
-  # Return +true+ if +tk+ is a newline.
+  # Dive into another container
 
-  def tk_nl?(tk)
-    :on_nl == tk[:kind] or :on_ignored_nl == tk[:kind]
-  end
+  def with_container(container, singleton: false)
+    old_container = @container
+    old_visibility = @visibility
+    old_singleton = @singleton
+    @visibility = :public
+    @container = container
+    @singleton = singleton
+    unless singleton
+      @module_nesting.push container
 
-  ##
-  # Retrieves the read token stream and replaces +pattern+ with +replacement+
-  # using gsub.  If the result is only a ";" returns an empty string.
-
-  def get_tkread_clean pattern, replacement # :nodoc:
-    read = get_tkread.gsub(pattern, replacement).strip
-    return '' if read == ';'
-    read
-  end
-
-  ##
-  # Extracts the visibility information for the visibility token +tk+
-  # and +single+ class type identifier.
-  #
-  # Returns the visibility type (a string), the visibility (a symbol) and
-  # +singleton+ if the methods following should be converted to singleton
-  # methods.
-
-  def get_visibility_information tk, single # :nodoc:
-    vis_type  = tk[:text]
-    singleton = single == SINGLE
-
-    vis =
-      case vis_type
-      when 'private'   then :private
-      when 'protected' then :protected
-      when 'public'    then :public
-      when 'private_class_method' then
-        singleton = true
-        :private
-      when 'public_class_method' then
-        singleton = true
-        :public
-      when 'module_function' then
-        singleton = true
-        :public
-      else
-        raise RDoc::Error, "Invalid visibility: #{tk.name}"
-      end
-
-    return vis_type, vis, singleton
-  end
-
-  ##
-  # Look for the first comment in a file that isn't a shebang line.
-
-  def collect_first_comment
-    skip_tkspace
-    comment = ''.dup
-    comment = RDoc::Encoding.change_encoding comment, @encoding if @encoding
-    first_line = true
-    first_comment_tk_kind = nil
-    line_no = nil
-
-    tk = get_tk
-
-    while tk && (:on_comment == tk[:kind] or :on_embdoc == tk[:kind])
-      comment_body = retrieve_comment_body(tk)
-      if first_line and comment_body =~ /\A#!/ then
-        skip_tkspace
-        tk = get_tk
-      elsif first_line and comment_body =~ /\A#\s*-\*-/ then
-        first_line = false
-        skip_tkspace
-        tk = get_tk
-      else
-        break if first_comment_tk_kind and not first_comment_tk_kind === tk[:kind]
-        first_comment_tk_kind = tk[:kind]
-
-        line_no = tk[:line_no] if first_line
-        first_line = false
-        comment << comment_body
-        tk = get_tk
-
-        if :on_nl === tk then
-          skip_tkspace_without_nl
-          tk = get_tk
-        end
-      end
+      # Need to update module parent chain to emulate Module.nesting.
+      # This mechanism is inaccurate and needs to be fixed.
+      container.parent = old_container
     end
-
-    unget_tk tk
-
-    new_comment comment, line_no
-  end
-
-  ##
-  # Consumes trailing whitespace from the token stream
-
-  def consume_trailing_spaces # :nodoc:
-    skip_tkspace_without_nl
-  end
-
-  ##
-  # Creates a new attribute in +container+ with +name+.
-
-  def create_attr container, single, name, rw, comment # :nodoc:
-    att = RDoc::Attr.new get_tkread, name, rw, comment, single == SINGLE
-    record_location att
-
-    container.add_attribute att
-    @stats.add_attribute att
-
-    att
-  end
-
-  ##
-  # Creates a module alias in +container+ at +rhs_name+ (or at the top-level
-  # for "::") with the name from +constant+.
-
-  def create_module_alias container, constant, rhs_name # :nodoc:
-    mod = if rhs_name =~ /^::/ then
-            @store.find_class_or_module rhs_name
-          else
-            container.find_module_named rhs_name
-          end
-
-    container.add_module_alias mod, rhs_name, constant, @top_level
-  end
-
-  ##
-  # Aborts with +msg+
-
-  def error(msg)
-    msg = make_message msg
-
-    abort msg
-  end
-
-  ##
-  # Looks for a true or false token.
-
-  def get_bool
-    skip_tkspace
-    tk = get_tk
-    if :on_kw == tk[:kind] && 'true' == tk[:text]
-      true
-    elsif :on_kw == tk[:kind] && ('false' == tk[:text] || 'nil' == tk[:text])
-      false
-    else
-      unget_tk tk
-      true
-    end
-  end
-
-  ##
-  # Look for the name of a class of module (optionally with a leading :: or
-  # with :: separated named) and return the ultimate name, the associated
-  # container, and the given name (with the ::).
-
-  def get_class_or_module container, ignore_constants = false
-    skip_tkspace
-    name_t = get_tk
-    given_name = ''.dup
-
-    # class ::A -> A is in the top level
-    if :on_op == name_t[:kind] and '::' == name_t[:text] then # bug
-      name_t = get_tk
-      container = @top_level
-      given_name << '::'
-    end
-
-    skip_tkspace_without_nl
-    given_name << name_t[:text]
-
-    is_self = name_t[:kind] == :on_op && name_t[:text] == '<<'
-    new_modules = []
-    while !is_self && (tk = peek_tk) and :on_op == tk[:kind] and '::' == tk[:text] do
-      prev_container = container
-      container = container.find_module_named name_t[:text]
-      container ||=
-        if ignore_constants then
-          c = RDoc::NormalModule.new name_t[:text]
-          c.store = @store
-          new_modules << [prev_container, c]
-          c
-        else
-          c = prev_container.add_module RDoc::NormalModule, name_t[:text]
-          c.ignore unless prev_container.document_children
-          @top_level.add_to_classes_or_modules c
-          c
-        end
-
-      record_location container
-
-      get_tk
-      skip_tkspace
-      if :on_lparen == peek_tk[:kind] # ProcObjectInConstant::()
-        parse_method_or_yield_parameters
-        break
-      end
-      name_t = get_tk
-      unless :on_const == name_t[:kind] || :on_ident == name_t[:kind]
-        raise RDoc::Error, "Invalid class or module definition: #{given_name}"
-      end
-      if prev_container == container and !ignore_constants
-        given_name = name_t[:text]
-      else
-        given_name << '::' + name_t[:text]
-      end
-    end
-
-    skip_tkspace_without_nl
-
-    return [container, name_t, given_name, new_modules]
-  end
-
-  ##
-  # Skip opening parentheses and yield the block.
-  # Skip closing parentheses too when exists.
-
-  def skip_parentheses(&block)
-    left_tk = peek_tk
-
-    if :on_lparen == left_tk[:kind]
-      get_tk
-
-      ret = skip_parentheses(&block)
-
-      right_tk = peek_tk
-      if :on_rparen == right_tk[:kind]
-        get_tk
-      end
-
-      ret
-    else
-      yield
-    end
-  end
-
-  ##
-  # Return a superclass, which can be either a constant of an expression
-
-  def get_class_specification
-    tk = peek_tk
-    if tk.nil?
-      return ''
-    elsif :on_kw == tk[:kind] && 'self' == tk[:text]
-      return 'self'
-    elsif :on_gvar == tk[:kind]
-      return ''
-    end
-
-    res = get_constant
-
-    skip_tkspace_without_nl
-
-    get_tkread # empty out read buffer
-
-    tk = get_tk
-    return res unless tk
-
-    case tk[:kind]
-    when :on_nl, :on_comment, :on_embdoc, :on_semicolon then
-      unget_tk(tk)
-      return res
-    end
-
-    res += parse_call_parameters(tk)
-    res
-  end
-
-  ##
-  # Parse a constant, which might be qualified by one or more class or module
-  # names
-
-  def get_constant
-    res = ""
-    skip_tkspace_without_nl
-    tk = get_tk
-
-    while tk && ((:on_op == tk[:kind] && '::' == tk[:text]) || :on_const == tk[:kind]) do
-      res += tk[:text]
-      tk = get_tk
-    end
-
-    unget_tk(tk)
-    res
-  end
-
-  ##
-  # Get an included module that may be surrounded by parens
-
-  def get_included_module_with_optional_parens
-    skip_tkspace_without_nl
-    get_tkread
-    tk = get_tk
-    end_token = get_end_token tk
-    return '' unless end_token
-
-    nest = 0
-    continue = false
-    only_constant = true
-
-    while tk != nil do
-      is_element_of_constant = false
-      case tk[:kind]
-      when :on_semicolon then
-        break if nest == 0
-      when :on_lbracket then
-        nest += 1
-      when :on_rbracket then
-        nest -= 1
-      when :on_lbrace then
-        nest += 1
-      when :on_rbrace then
-        nest -= 1
-        if nest <= 0
-          # we might have a.each { |i| yield i }
-          unget_tk(tk) if nest < 0
-          break
-        end
-      when :on_lparen then
-        nest += 1
-      when end_token[:kind] then
-        if end_token[:kind] == :on_rparen
-          nest -= 1
-          break if nest <= 0
-        else
-          break if nest <= 0
-        end
-      when :on_rparen then
-        nest -= 1
-      when :on_comment, :on_embdoc then
-        @read.pop
-        if :on_nl == end_token[:kind] and "\n" == tk[:text][-1] and
-          (!continue or (tk[:state] & Ripper::EXPR_LABEL) != 0) then
-          break if !continue and nest <= 0
-        end
-      when :on_comma then
-        continue = true
-      when :on_ident then
-        continue = false if continue
-      when :on_kw then
-        case tk[:text]
-        when 'def', 'do', 'case', 'for', 'begin', 'class', 'module'
-          nest += 1
-        when 'if', 'unless', 'while', 'until', 'rescue'
-          # postfix if/unless/while/until/rescue must be EXPR_LABEL
-          nest += 1 unless (tk[:state] & Ripper::EXPR_LABEL) != 0
-        when 'end'
-          nest -= 1
-          break if nest == 0
-        end
-      when :on_const then
-        is_element_of_constant = true
-      when :on_op then
-        is_element_of_constant = true if '::' == tk[:text]
-      end
-      only_constant = false unless is_element_of_constant
-      tk = get_tk
-    end
-
-    if only_constant
-      get_tkread_clean(/\s+/, ' ')
-    else
-      ''
-    end
-  end
-
-  ##
-  # Little hack going on here. In the statement:
-  #
-  #   f = 2*(1+yield)
-  #
-  # We see the RPAREN as the next token, so we need to exit early.  This still
-  # won't catch all cases (such as "a = yield + 1"
-
-  def get_end_token tk # :nodoc:
-    case tk[:kind]
-    when :on_lparen
-      token = RDoc::Parser::RipperStateLex::Token.new
-      token[:kind] = :on_rparen
-      token[:text] = ')'
-      token
-    when :on_rparen
-      nil
-    else
-      token = RDoc::Parser::RipperStateLex::Token.new
-      token[:kind] = :on_nl
-      token[:text] = "\n"
-      token
-    end
-  end
-
-  ##
-  # Retrieves the method container for a singleton method.
-
-  def get_method_container container, name_t # :nodoc:
-    prev_container = container
-    container = container.find_module_named(name_t[:text])
-
-    unless container then
-      constant = prev_container.constants.find do |const|
-        const.name == name_t[:text]
-      end
-
-      if constant then
-        parse_method_dummy prev_container
-        return
-      end
-    end
-
-    unless container then
-      # TODO seems broken, should starting at Object in @store
-      obj = name_t[:text].split("::").inject(Object) do |state, item|
-        state.const_get(item)
-      end rescue nil
-
-      type = obj.class == Class ? RDoc::NormalClass : RDoc::NormalModule
-
-      unless [Class, Module].include?(obj.class) then
-        warn("Couldn't find #{name_t[:text]}. Assuming it's a module")
-      end
-
-      if type == RDoc::NormalClass then
-        sclass = obj.superclass ? obj.superclass.name : nil
-        container = prev_container.add_class type, name_t[:text], sclass
-      else
-        container = prev_container.add_module type, name_t[:text]
-      end
-
-      record_location container
-    end
-
-    container
-  end
-
-  ##
-  # Extracts a name or symbol from the token stream.
-
-  def get_symbol_or_name
-    tk = get_tk
-    case tk[:kind]
-    when :on_symbol then
-      text = tk[:text].sub(/^:/, '')
-
-      next_tk = peek_tk
-      if next_tk && :on_op == next_tk[:kind] && '=' == next_tk[:text] then
-        get_tk
-        text << '='
-      end
-
-      text
-    when :on_ident, :on_const, :on_gvar, :on_cvar, :on_ivar, :on_op, :on_kw then
-      tk[:text]
-    when :on_tstring, :on_dstring then
-      tk[:text][1..-2]
-    else
-      raise RDoc::Error, "Name or symbol expected (got #{tk})"
-    end
-  end
-
-  ##
-  # Marks containers between +container+ and +ancestor+ as ignored
-
-  def suppress_parents container, ancestor # :nodoc:
-    while container and container != ancestor do
-      container.suppress unless container.documented?
-      container = container.parent
-    end
-  end
-
-  ##
-  # Look for directives in a normal comment block:
-  #
-  #   # :stopdoc:
-  #   # Don't display comment from this point forward
-  #
-  # This routine modifies its +comment+ parameter.
-
-  def look_for_directives_in container, comment
-    @preprocess.handle comment, container do |directive, param|
-      case directive
-      when 'method', 'singleton-method',
-           'attr', 'attr_accessor', 'attr_reader', 'attr_writer' then
-        false # handled elsewhere
-      when 'section' then
-        break unless container.kind_of?(RDoc::Context)
-        container.set_current_section param, comment.dup
-        comment.text = ''
-        break
-      end
-    end
-
-    comment.remove_private
-  end
-
-  ##
-  # Adds useful info about the parser to +message+
-
-  def make_message message
-    prefix = "#{@file_name}:".dup
-
-    tk = peek_tk
-    prefix << "#{tk[:line_no]}:#{tk[:char_no]}:" if tk
-
-    "#{prefix} #{message}"
-  end
-
-  ##
-  # Creates a comment with the correct format
-
-  def new_comment comment, line_no = nil
-    c = RDoc::Comment.new comment, @top_level, :ruby
-    c.line = line_no
-    c.format = @markup
-    c
-  end
-
-  ##
-  # Creates an RDoc::Attr for the name following +tk+, setting the comment to
-  # +comment+.
-
-  def parse_attr(context, single, tk, comment)
-    line_no = tk[:line_no]
-
-    args = parse_symbol_arg 1
-    if args.size > 0 then
-      name = args[0]
-      rw = "R"
-      skip_tkspace_without_nl
-      tk = get_tk
-
-      if :on_comma == tk[:kind] then
-        rw = "RW" if get_bool
-      else
-        unget_tk tk
-      end
-
-      att = create_attr context, single, name, rw, comment
-      att.line   = line_no
-
-      read_documentation_modifiers att, RDoc::ATTR_MODIFIERS
-    else
-      warn "'attr' ignored - looks like a variable"
-    end
-  end
-
-  ##
-  # Creates an RDoc::Attr for each attribute listed after +tk+, setting the
-  # comment for each to +comment+.
-
-  def parse_attr_accessor(context, single, tk, comment)
-    line_no = tk[:line_no]
-
-    args = parse_symbol_arg
-    rw = "?"
-
-    tmp = RDoc::CodeObject.new
-    read_documentation_modifiers tmp, RDoc::ATTR_MODIFIERS
-    # TODO In most other places we let the context keep track of document_self
-    # and add found items appropriately but here we do not.  I'm not sure why.
-    return if @track_visibility and not tmp.document_self
-
-    case tk[:text]
-    when "attr_reader"   then rw = "R"
-    when "attr_writer"   then rw = "W"
-    when "attr_accessor" then rw = "RW"
-    else
-      rw = '?'
-    end
-
-    for name in args
-      att = create_attr context, single, name, rw, comment
-      att.line   = line_no
-    end
-  end
-
-  ##
-  # Parses an +alias+ in +context+ with +comment+
-
-  def parse_alias(context, single, tk, comment)
-    line_no = tk[:line_no]
-
-    skip_tkspace
-
-    if :on_lparen === peek_tk[:kind] then
-      get_tk
-      skip_tkspace
-    end
-
-    new_name = get_symbol_or_name
-
-    skip_tkspace
-    if :on_comma === peek_tk[:kind] then
-      get_tk
-      skip_tkspace
-    end
-
-    begin
-      old_name = get_symbol_or_name
-    rescue RDoc::Error
-      return
-    end
-
-    al = RDoc::Alias.new(get_tkread, old_name, new_name, comment,
-                         single == SINGLE)
-    record_location al
-    al.line   = line_no
-
-    read_documentation_modifiers al, RDoc::ATTR_MODIFIERS
-    if al.document_self or not @track_visibility
-      context.add_alias al
-      @stats.add_alias al
-    end
-
-    al
-  end
-
-  ##
-  # Extracts call parameters from the token stream.
-
-  def parse_call_parameters(tk)
-    end_token = case tk[:kind]
-                when :on_lparen
-                  :on_rparen
-                when :on_rparen
-                  return ""
-                else
-                  :on_nl
-                end
-    nest = 0
-
-    loop do
-      break if tk.nil?
-      case tk[:kind]
-      when :on_semicolon
-        break
-      when :on_lparen
-        nest += 1
-      when end_token
-        if end_token == :on_rparen
-          nest -= 1
-          break if RDoc::Parser::RipperStateLex.end?(tk) and nest <= 0
-        else
-          break if RDoc::Parser::RipperStateLex.end?(tk)
-        end
-      when :on_comment, :on_embdoc
-        unget_tk(tk)
-        break
-      when :on_op
-        if tk[:text] =~ /^(.{1,2})?=$/
-          unget_tk(tk)
-          break
-        end
-      end
-      tk = get_tk
-    end
-
-    get_tkread_clean "\n", " "
-  end
-
-  ##
-  # Parses a class in +context+ with +comment+
-
-  def parse_class container, single, tk, comment
-    line_no = tk[:line_no]
-
-    declaration_context = container
-    container, name_t, given_name, = get_class_or_module container
-
-    if name_t[:kind] == :on_const
-      cls = parse_class_regular container, declaration_context, single,
-        name_t, given_name, comment
-    elsif name_t[:kind] == :on_op && name_t[:text] == '<<'
-      case name = skip_parentheses { get_class_specification }
-      when 'self', container.name
-        read_documentation_modifiers cls, RDoc::CLASS_MODIFIERS
-        parse_statements container, SINGLE
-        return # don't update line
-      else
-        cls = parse_class_singleton container, name, comment
-      end
-    else
-      warn "Expected class name or '<<'. Got #{name_t[:kind]}: #{name_t[:text].inspect}"
-      return
-    end
-
-    cls.line   = line_no
-
-    # after end modifiers
-    read_documentation_modifiers cls, RDoc::CLASS_MODIFIERS
-
-    cls
-  end
-
-  ##
-  # Parses and creates a regular class
-
-  def parse_class_regular container, declaration_context, single, # :nodoc:
-                          name_t, given_name, comment
-    superclass = '::Object'
-
-    if given_name =~ /^::/ then
-      declaration_context = @top_level
-      given_name = $'
-    end
-
-    tk = peek_tk
-    if tk[:kind] == :on_op && tk[:text] == '<' then
-      get_tk
-      skip_tkspace
-      superclass = get_class_specification
-      superclass = '(unknown)' if superclass.empty?
-    end
-
-    cls_type = single == SINGLE ? RDoc::SingleClass : RDoc::NormalClass
-    cls = declaration_context.add_class cls_type, given_name, superclass
-    cls.ignore unless container.document_children
-
-    read_documentation_modifiers cls, RDoc::CLASS_MODIFIERS
-    record_location cls
-
-    cls.add_comment comment, @top_level
-
-    @top_level.add_to_classes_or_modules cls
-    @stats.add_class cls
-
-    suppress_parents container, declaration_context unless cls.document_self
-
-    parse_statements cls
-
-    cls
-  end
-
-  ##
-  # Parses a singleton class in +container+ with the given +name+ and
-  # +comment+.
-
-  def parse_class_singleton container, name, comment # :nodoc:
-    other = @store.find_class_named name
-
-    unless other then
-      if name =~ /^::/ then
-        name = $'
-        container = @top_level
-      end
-
-      other = container.add_module RDoc::NormalModule, name
-      record_location other
-
-      # class << $gvar
-      other.ignore if name.empty?
-
-      other.add_comment comment, @top_level
-    end
-
-    # notify :nodoc: all if not a constant-named class/module
-    # (and remove any comment)
-    unless name =~ /\A(::)?[A-Z]/ then
-      other.document_self = nil
-      other.document_children = false
-      other.clear_comment
-    end
-
-    @top_level.add_to_classes_or_modules other
-    @stats.add_class other
-
-    read_documentation_modifiers other, RDoc::CLASS_MODIFIERS
-    parse_statements(other, SINGLE)
-
-    other
-  end
-
-  ##
-  # Parses a constant in +context+ with +comment+.  If +ignore_constants+ is
-  # true, no found constants will be added to RDoc.
-
-  def parse_constant container, tk, comment, ignore_constants = false
-    line_no = tk[:line_no]
-
-    name = tk[:text]
-    skip_tkspace_without_nl
-
-    return unless name =~ /^\w+$/
-
-    new_modules = []
-    if :on_op == peek_tk[:kind] && '::' == peek_tk[:text] then
-      unget_tk tk
-
-      container, name_t, _, new_modules = get_class_or_module container, true
-
-      name = name_t[:text]
-    end
-
-    is_array_or_hash = false
-    if peek_tk && :on_lbracket == peek_tk[:kind]
-      get_tk
-      nest = 1
-      while bracket_tk = get_tk
-        case bracket_tk[:kind]
-        when :on_lbracket
-          nest += 1
-        when :on_rbracket
-          nest -= 1
-          break if nest == 0
-        end
-      end
-      skip_tkspace_without_nl
-      is_array_or_hash = true
-    end
-
-    unless peek_tk && :on_op == peek_tk[:kind] && '=' == peek_tk[:text] then
-      return false
-    end
-    get_tk
-
-    unless ignore_constants
-      new_modules.each do |prev_c, new_module|
-        prev_c.add_module_by_normal_module new_module
-        new_module.ignore unless prev_c.document_children
-        @top_level.add_to_classes_or_modules new_module
-      end
-    end
-
-    value = ''
-    con = RDoc::Constant.new name, value, comment
-
-    body = parse_constant_body container, con, is_array_or_hash
-
-    return unless body
-
-    con.value = body
-    record_location con
-    con.line   = line_no
-    read_documentation_modifiers con, RDoc::CONSTANT_MODIFIERS
-
-    return if is_array_or_hash
-
-    @stats.add_constant con
-    container.add_constant con
-
-    true
-  end
-
-  def parse_constant_body container, constant, is_array_or_hash # :nodoc:
-    nest     = 0
-    rhs_name = ''.dup
-
-    get_tkread
-
-    tk = get_tk
-
-    body = nil
-    loop do
-      break if tk.nil?
-      if :on_semicolon == tk[:kind] then
-        break if nest <= 0
-      elsif [:on_tlambeg, :on_lparen, :on_lbrace, :on_lbracket].include?(tk[:kind]) then
-        nest += 1
-      elsif (:on_kw == tk[:kind] && 'def' == tk[:text]) then
-        nest += 1
-      elsif (:on_kw == tk[:kind] && %w{do if unless case begin}.include?(tk[:text])) then
-        if (tk[:state] & Ripper::EXPR_LABEL) == 0
-          nest += 1
-        end
-      elsif [:on_rparen, :on_rbrace, :on_rbracket].include?(tk[:kind]) ||
-            (:on_kw == tk[:kind] && 'end' == tk[:text]) then
-        nest -= 1
-      elsif (:on_comment == tk[:kind] or :on_embdoc == tk[:kind]) then
-        unget_tk tk
-        if nest <= 0 and RDoc::Parser::RipperStateLex.end?(tk) then
-          body = get_tkread_clean(/^[ \t]+/, '')
-          read_documentation_modifiers constant, RDoc::CONSTANT_MODIFIERS
-          break
-        else
-          read_documentation_modifiers constant, RDoc::CONSTANT_MODIFIERS
-        end
-      elsif :on_const == tk[:kind] then
-        rhs_name << tk[:text]
-
-        next_tk = peek_tk
-        if nest <= 0 and (next_tk.nil? || :on_nl == next_tk[:kind]) then
-          create_module_alias container, constant, rhs_name unless is_array_or_hash
-          break
-        end
-      elsif :on_nl == tk[:kind] then
-        if nest <= 0 and RDoc::Parser::RipperStateLex.end?(tk) then
-          unget_tk tk
-          break
-        end
-      elsif :on_op == tk[:kind] && '::' == tk[:text]
-        rhs_name << '::'
-      end
-      tk = get_tk
-    end
-
-    body ? body : get_tkread_clean(/^[ \t]+/, '')
-  end
-
-  ##
-  # Generates an RDoc::Method or RDoc::Attr from +comment+ by looking for
-  # :method: or :attr: directives in +comment+.
-
-  def parse_comment container, tk, comment
-    return parse_comment_tomdoc container, tk, comment if @markup == 'tomdoc'
-    column  = tk[:char_no]
-    line_no = comment.line.nil? ? tk[:line_no] : comment.line
-
-    comment.text = comment.text.sub(/(^# +:?)(singleton-)(method:)/, '\1\3')
-    singleton = !!$~
-
-    co =
-      if (comment.text = comment.text.sub(/^# +:?method: *(\S*).*?\n/i, '')) && !!$~ then
-        line_no += $`.count("\n")
-        parse_comment_ghost container, comment.text, $1, column, line_no, comment
-      elsif (comment.text = comment.text.sub(/# +:?(attr(_reader|_writer|_accessor)?): *(\S*).*?\n/i, '')) && !!$~ then
-        parse_comment_attr container, $1, $3, comment
-      end
-
-    if co then
-      co.singleton = singleton
-      co.line      = line_no
-    end
-
-    true
-  end
-
-  ##
-  # Parse a comment that is describing an attribute in +container+ with the
-  # given +name+ and +comment+.
-
-  def parse_comment_attr container, type, name, comment # :nodoc:
-    return if name.empty?
-
-    rw = case type
-         when 'attr_reader' then 'R'
-         when 'attr_writer' then 'W'
-         else 'RW'
-         end
-
-    create_attr container, NORMAL, name, rw, comment
-  end
-
-  def parse_comment_ghost container, text, name, column, line_no, # :nodoc:
-                          comment
-    name = nil if name.empty?
-
-    meth = RDoc::GhostMethod.new get_tkread, name
-    record_location meth
-
-    meth.start_collecting_tokens
-    indent = RDoc::Parser::RipperStateLex::Token.new(1, 1, :on_sp, ' ' * column)
-    position_comment = RDoc::Parser::RipperStateLex::Token.new(line_no, 1, :on_comment)
-    position_comment[:text] = "# File #{@top_level.relative_name}, line #{line_no}"
-    newline = RDoc::Parser::RipperStateLex::Token.new(0, 0, :on_nl, "\n")
-    meth.add_tokens [position_comment, newline, indent]
-
-    meth.params =
-      if text.sub!(/^#\s+:?args?:\s*(.*?)\s*$/i, '') then
-        $1
-      else
-        ''
-      end
-
-    comment.normalize
-    comment.extract_call_seq meth
-
-    return unless meth.name
-
-    container.add_method meth
-
-    meth.comment = comment
-
-    @stats.add_method meth
-
-    meth
-  end
-
-  ##
-  # Creates an RDoc::Method on +container+ from +comment+ if there is a
-  # Signature section in the comment
-
-  def parse_comment_tomdoc container, tk, comment
-    return unless signature = RDoc::TomDoc.signature(comment)
-    column  = tk[:char_no]
-    line_no = tk[:line_no]
-
-    name, = signature.split %r%[ \(]%, 2
-
-    meth = RDoc::GhostMethod.new get_tkread, name
-    record_location meth
-    meth.line      = line_no
-
-    meth.start_collecting_tokens
-    indent = RDoc::Parser::RipperStateLex::Token.new(1, 1, :on_sp, ' ' * column)
-    position_comment = RDoc::Parser::RipperStateLex::Token.new(line_no, 1, :on_comment)
-    position_comment[:text] = "# File #{@top_level.relative_name}, line #{line_no}"
-    newline = RDoc::Parser::RipperStateLex::Token.new(0, 0, :on_nl, "\n")
-    meth.add_tokens [position_comment, newline, indent]
-
-    meth.call_seq = signature
-
-    comment.normalize
-
-    return unless meth.name
-
-    container.add_method meth
-
-    meth.comment = comment
-
-    @stats.add_method meth
-  end
-
-  ##
-  # Parses an +include+ or +extend+, indicated by the +klass+ and adds it to
-  # +container+ # with +comment+
-
-  def parse_extend_or_include klass, container, comment # :nodoc:
-    loop do
-      skip_tkspace_comment
-
-      name = get_included_module_with_optional_parens
-
-      unless name.empty? then
-        obj = container.add klass, name, comment
-        record_location obj
-      end
-
-      return if peek_tk.nil? || :on_comma != peek_tk[:kind]
-
-      get_tk
-    end
-  end
-
-  ##
-  # Parses an +included+ with a block feature of ActiveSupport::Concern.
-
-  def parse_included_with_activesupport_concern container, comment # :nodoc:
-    skip_tkspace_without_nl
-    tk = get_tk
-    unless tk[:kind] == :on_lbracket || (tk[:kind] == :on_kw && tk[:text] == 'do')
-      unget_tk tk
-      return nil # should be a block
-    end
-
-    parse_statements container
-
-    container
-  end
-
-  ##
-  # Parses identifiers that can create new methods or change visibility.
-  #
-  # Returns true if the comment was not consumed.
-
-  def parse_identifier container, single, tk, comment # :nodoc:
-    case tk[:text]
-    when 'private', 'protected', 'public', 'private_class_method',
-         'public_class_method', 'module_function' then
-      parse_visibility container, single, tk
-      return true
-    when 'private_constant', 'public_constant'
-      parse_constant_visibility container, single, tk
-      return true
-    when 'attr' then
-      parse_attr container, single, tk, comment
-    when /^attr_(reader|writer|accessor)$/ then
-      parse_attr_accessor container, single, tk, comment
-    when 'alias_method' then
-      parse_alias container, single, tk, comment
-    when 'require', 'include' then
-      # ignore
-    else
-      if comment.text =~ /\A#\#$/ then
-        case comment.text
-        when /^# +:?attr(_reader|_writer|_accessor)?:/ then
-          parse_meta_attr container, single, tk, comment
-        else
-          method = parse_meta_method container, single, tk, comment
-          method.params = container.params if
-            container.params
-          method.block_params = container.block_params if
-            container.block_params
-        end
-      end
-    end
-
-    false
-  end
-
-  ##
-  # Parses a meta-programmed attribute and creates an RDoc::Attr.
-  #
-  # To create foo and bar attributes on class C with comment "My attributes":
-  #
-  #   class C
-  #
-  #     ##
-  #     # :attr:
-  #     #
-  #     # My attributes
-  #
-  #     my_attr :foo, :bar
-  #
-  #   end
-  #
-  # To create a foo attribute on class C with comment "My attribute":
-  #
-  #   class C
-  #
-  #     ##
-  #     # :attr: foo
-  #     #
-  #     # My attribute
-  #
-  #     my_attr :foo, :bar
-  #
-  #   end
-
-  def parse_meta_attr(context, single, tk, comment)
-    args = parse_symbol_arg
-    rw = "?"
-
-    # If nodoc is given, don't document any of them
-
-    tmp = RDoc::CodeObject.new
-    read_documentation_modifiers tmp, RDoc::ATTR_MODIFIERS
-
-    regexp = /^# +:?(attr(_reader|_writer|_accessor)?): *(\S*).*?\n/i
-    if regexp =~ comment.text then
-      comment.text = comment.text.sub(regexp, '')
-      rw = case $1
-           when 'attr_reader' then 'R'
-           when 'attr_writer' then 'W'
-           else 'RW'
-           end
-      name = $3 unless $3.empty?
-    end
-
-    if name then
-      att = create_attr context, single, name, rw, comment
-    else
-      args.each do |attr_name|
-        att = create_attr context, single, attr_name, rw, comment
-      end
-    end
-
-    att
-  end
-
-  ##
-  # Parses a meta-programmed method
-
-  def parse_meta_method(container, single, tk, comment)
-    column  = tk[:char_no]
-    line_no = tk[:line_no]
-
-    start_collecting_tokens
-    add_token tk
-    add_token_listener self
-
-    skip_tkspace_without_nl
-
-    comment.text = comment.text.sub(/(^# +:?)(singleton-)(method:)/, '\1\3')
-    singleton = !!$~
-
-    name = parse_meta_method_name comment, tk
-
-    return unless name
-
-    meth = RDoc::MetaMethod.new get_tkread, name
-    record_location meth
-    meth.line   = line_no
-    meth.singleton = singleton
-
-    remove_token_listener self
-
-    meth.start_collecting_tokens
-    indent = RDoc::Parser::RipperStateLex::Token.new(1, 1, :on_sp, ' ' * column)
-    position_comment = RDoc::Parser::RipperStateLex::Token.new(line_no, 1, :on_comment)
-    position_comment[:text] = "# File #{@top_level.relative_name}, line #{line_no}"
-    newline = RDoc::Parser::RipperStateLex::Token.new(0, 0, :on_nl, "\n")
-    meth.add_tokens [position_comment, newline, indent]
-    meth.add_tokens @token_stream
-
-    parse_meta_method_params container, single, meth, tk, comment
-
-    meth.comment = comment
-
-    @stats.add_method meth
-
-    meth
-  end
-
-  ##
-  # Parses the name of a metaprogrammed method.  +comment+ is used to
-  # determine the name while +tk+ is used in an error message if the name
-  # cannot be determined.
-
-  def parse_meta_method_name comment, tk # :nodoc:
-    if comment.text.sub!(/^# +:?method: *(\S*).*?\n/i, '') then
-      return $1 unless $1.empty?
-    end
-
-    name_t = get_tk
-
-    if :on_symbol == name_t[:kind] then
-      name_t[:text][1..-1]
-    elsif :on_tstring == name_t[:kind] then
-      name_t[:text][1..-2]
-    elsif :on_op == name_t[:kind] && '=' == name_t[:text] then # ignore
-      remove_token_listener self
-
-      nil
-    else
-      warn "unknown name token #{name_t.inspect} for meta-method '#{tk[:text]}'"
-      'unknown'
-    end
-  end
-
-  ##
-  # Parses the parameters and block for a meta-programmed method.
-
-  def parse_meta_method_params container, single, meth, tk, comment # :nodoc:
-    token_listener meth do
-      meth.params = ''
-
-      look_for_directives_in meth, comment
-      comment.normalize
-      comment.extract_call_seq meth
-
-      container.add_method meth
-
-      last_tk = tk
-
-      while tk = get_tk do
-        if :on_semicolon == tk[:kind] then
-          break
-        elsif :on_nl == tk[:kind] then
-          break unless last_tk and :on_comma == last_tk[:kind]
-        elsif :on_sp == tk[:kind] then
-          # expression continues
-        elsif :on_kw == tk[:kind] && 'do' == tk[:text] then
-          parse_statements container, single, meth
-          break
-        else
-          last_tk = tk
-        end
-      end
-    end
-  end
-
-  ##
-  # Parses a normal method defined by +def+
-
-  def parse_method(container, single, tk, comment)
-    singleton = nil
-    added_container = false
-    name = nil
-    column  = tk[:char_no]
-    line_no = tk[:line_no]
-
-    start_collecting_tokens
-    add_token tk
-
-    token_listener self do
-      prev_container = container
-      name, container, singleton = parse_method_name container
-      added_container = container != prev_container
-    end
-
-    return unless name
-
-    meth = RDoc::AnyMethod.new get_tkread, name
-    look_for_directives_in meth, comment
-    meth.singleton = single == SINGLE ? true : singleton
-    if singleton
-      # `current_line_visibility' is useless because it works against
-      # the normal method named as same as the singleton method, after
-      # the latter was defined.  Of course these are different things.
-      container.current_line_visibility = :public
-    end
-
-    record_location meth
-    meth.line   = line_no
-
-    meth.start_collecting_tokens
-    indent = RDoc::Parser::RipperStateLex::Token.new(1, 1, :on_sp, ' ' * column)
-    token = RDoc::Parser::RipperStateLex::Token.new(line_no, 1, :on_comment)
-    token[:text] = "# File #{@top_level.relative_name}, line #{line_no}"
-    newline = RDoc::Parser::RipperStateLex::Token.new(0, 0, :on_nl, "\n")
-    meth.add_tokens [token, newline, indent]
-    meth.add_tokens @token_stream
-
-    parse_method_params_and_body container, single, meth, added_container
-
-    comment.normalize
-    comment.extract_call_seq meth
-
-    meth.comment = comment
-
-    # after end modifiers
-    read_documentation_modifiers meth, RDoc::METHOD_MODIFIERS
-
-    @stats.add_method meth
-  end
-
-  ##
-  # Parses the parameters and body of +meth+
-
-  def parse_method_params_and_body container, single, meth, added_container
-    token_listener meth do
-      parse_method_parameters meth
-
-      if meth.document_self or not @track_visibility then
-        container.add_method meth
-      elsif added_container then
-        container.document_self = false
-      end
-
-      # Having now read the method parameters and documentation modifiers, we
-      # now know whether we have to rename #initialize to ::new
-
-      if meth.name == "initialize" && !meth.singleton then
-        if meth.dont_rename_initialize then
-          meth.visibility = :protected
-        else
-          meth.singleton = true
-          meth.name = "new"
-          meth.visibility = :public
-        end
-      end
-
-      parse_statements container, single, meth
-    end
-  end
-
-  ##
-  # Parses a method that needs to be ignored.
-
-  def parse_method_dummy container
-    dummy = RDoc::Context.new
-    dummy.parent = container
-    dummy.store  = container.store
-    skip_method dummy
-  end
-
-  ##
-  # Parses the name of a method in +container+.
-  #
-  # Returns the method name, the container it is in (for def Foo.name) and if
-  # it is a singleton or regular method.
-
-  def parse_method_name container # :nodoc:
-    skip_tkspace
-    name_t = get_tk
-    back_tk = skip_tkspace_without_nl
-    singleton = false
-
-    dot = get_tk
-    if dot[:kind] == :on_period || (dot[:kind] == :on_op && dot[:text] == '::') then
-      singleton = true
-
-      name, container = parse_method_name_singleton container, name_t
-    else
-      unget_tk dot
-      back_tk.reverse_each do |token|
-        unget_tk token
-      end
-
-      name = parse_method_name_regular container, name_t
-    end
-
-    return name, container, singleton
-  end
-
-  ##
-  # For the given +container+ and initial name token +name_t+ the method name
-  # is parsed from the token stream for a regular method.
-
-  def parse_method_name_regular container, name_t # :nodoc:
-    if :on_op == name_t[:kind] && (%w{* & [] []= <<}.include?(name_t[:text])) then
-      name_t[:text]
-    else
-      unless [:on_kw, :on_const, :on_ident].include?(name_t[:kind]) then
-        warn "expected method name token, . or ::, got #{name_t.inspect}"
-        skip_method container
-        return
-      end
-      name_t[:text]
-    end
-  end
-
-  ##
-  # For the given +container+ and initial name token +name_t+ the method name
-  # and the new +container+ (if necessary) are parsed from the token stream
-  # for a singleton method.
-
-  def parse_method_name_singleton container, name_t # :nodoc:
-    skip_tkspace
-    name_t2 = get_tk
-
-    if (:on_kw == name_t[:kind] && 'self' == name_t[:text]) || (:on_op == name_t[:kind] && '%' == name_t[:text]) then
-      # NOTE: work around '[' being consumed early
-      if :on_lbracket == name_t2[:kind]
-        get_tk
-        name = '[]'
-      else
-        name = name_t2[:text]
-      end
-    elsif :on_const == name_t[:kind] then
-      name = name_t2[:text]
-
-      container = get_method_container container, name_t
-
-      return unless container
-
-      name
-    elsif :on_ident == name_t[:kind] || :on_ivar == name_t[:kind] || :on_gvar == name_t[:kind] then
-      parse_method_dummy container
-
-      name = nil
-    elsif (:on_kw == name_t[:kind]) && ('true' == name_t[:text] || 'false' == name_t[:text] || 'nil' == name_t[:text]) then
-      klass_name = "#{name_t[:text].capitalize}Class"
-      container = @store.find_class_named klass_name
-      container ||= @top_level.add_class RDoc::NormalClass, klass_name
-
-      name = name_t2[:text]
-    else
-      warn "unexpected method name token #{name_t.inspect}"
-      # break
-      skip_method container
-
-      name = nil
-    end
-
-    return name, container
-  end
-
-  ##
-  # Extracts +yield+ parameters from +method+
-
-  def parse_method_or_yield_parameters(method = nil,
-                                       modifiers = RDoc::METHOD_MODIFIERS)
-    skip_tkspace_without_nl
-    tk = get_tk
-    end_token = get_end_token tk
-    return '' unless end_token
-
-    nest = 0
-    continue = false
-
-    while tk != nil do
-      case tk[:kind]
-      when :on_semicolon then
-        break if nest == 0
-      when :on_lbracket then
-        nest += 1
-      when :on_rbracket then
-        nest -= 1
-      when :on_lbrace then
-        nest += 1
-      when :on_rbrace then
-        nest -= 1
-        if nest <= 0
-          # we might have a.each { |i| yield i }
-          unget_tk(tk) if nest < 0
-          break
-        end
-      when :on_lparen then
-        nest += 1
-      when end_token[:kind] then
-        if end_token[:kind] == :on_rparen
-          nest -= 1
-          break if nest <= 0
-        else
-          break
-        end
-      when :on_rparen then
-        nest -= 1
-      when :on_comment, :on_embdoc then
-        @read.pop
-        if :on_nl == end_token[:kind] and "\n" == tk[:text][-1] and
-          (!continue or (tk[:state] & Ripper::EXPR_LABEL) != 0) then
-          if method && method.block_params.nil? then
-            unget_tk tk
-            read_documentation_modifiers method, modifiers
-          end
-          break if !continue and nest <= 0
-        end
-      when :on_comma then
-        continue = true
-      when :on_ident then
-        continue = false if continue
-      end
-      tk = get_tk
-    end
-
-    get_tkread_clean(/\s+/, ' ')
-  end
-
-  ##
-  # Capture the method's parameters. Along the way, look for a comment
-  # containing:
-  #
-  #    # yields: ....
-  #
-  # and add this as the block_params for the method
-
-  def parse_method_parameters method
-    res = parse_method_or_yield_parameters method
-
-    res = "(#{res})" unless res =~ /\A\(/
-    method.params = res unless method.params
-
-    return if  method.block_params
-
-    skip_tkspace_without_nl
-    read_documentation_modifiers method, RDoc::METHOD_MODIFIERS
-  end
-
-  ##
-  # Parses an RDoc::NormalModule in +container+ with +comment+
-
-  def parse_module container, single, tk, comment
-    container, name_t, = get_class_or_module container
-
-    name = name_t[:text]
-
-    mod = container.add_module RDoc::NormalModule, name
-    mod.ignore unless container.document_children
-    record_location mod
-
-    read_documentation_modifiers mod, RDoc::CLASS_MODIFIERS
-    mod.add_comment comment, @top_level
-    parse_statements mod
-
-    # after end modifiers
-    read_documentation_modifiers mod, RDoc::CLASS_MODIFIERS
-
-    @stats.add_module mod
-  end
-
-  ##
-  # Parses an RDoc::Require in +context+ containing +comment+
-
-  def parse_require(context, comment)
-    skip_tkspace_comment
-    tk = get_tk
-
-    if :on_lparen == tk[:kind] then
-      skip_tkspace_comment
-      tk = get_tk
-    end
-
-    name = tk[:text][1..-2] if :on_tstring == tk[:kind]
-
-    if name then
-      @top_level.add_require RDoc::Require.new(name, comment)
-    else
-      unget_tk tk
-    end
-  end
-
-  ##
-  # Parses a rescue
-
-  def parse_rescue
-    skip_tkspace_without_nl
-
-    while tk = get_tk
-      case tk[:kind]
-      when :on_nl, :on_semicolon, :on_comment then
-        break
-      when :on_comma then
-        skip_tkspace_without_nl
-
-        get_tk if :on_nl == peek_tk[:kind]
-      end
-
-      skip_tkspace_without_nl
-    end
-  end
-
-  ##
-  # Retrieve comment body without =begin/=end
-
-  def retrieve_comment_body(tk)
-    if :on_embdoc == tk[:kind]
-      tk[:text].gsub(/\A=begin.*\n/, '').gsub(/=end\n?\z/, '')
-    else
-      tk[:text]
-    end
-  end
-
-  ##
-  # The core of the Ruby parser.
-
-  def parse_statements(container, single = NORMAL, current_method = nil,
-                       comment = new_comment(''))
-    raise 'no' unless RDoc::Comment === comment
-    comment = RDoc::Encoding.change_encoding comment, @encoding if @encoding
-
-    nest = 1
-    save_visibility = container.visibility
-    container.visibility = :public unless current_method
-
-    non_comment_seen = true
-
-    while tk = get_tk do
-      keep_comment = false
-      try_parse_comment = false
-
-      non_comment_seen = true unless (:on_comment == tk[:kind] or :on_embdoc == tk[:kind])
-
-      case tk[:kind]
-      when :on_nl, :on_ignored_nl, :on_comment, :on_embdoc then
-        if :on_nl == tk[:kind] or :on_ignored_nl == tk[:kind]
-          skip_tkspace
-          tk = get_tk
-        else
-          past_tokens = @read.size > 1 ? @read[0..-2] : []
-          nl_position = 0
-          past_tokens.reverse.each_with_index do |read_tk, i|
-            if read_tk =~ /^\n$/ then
-              nl_position = (past_tokens.size - 1) - i
-              break
-            elsif read_tk =~ /^#.*\n$/ then
-              nl_position = ((past_tokens.size - 1) - i) + 1
-              break
-            end
-          end
-          comment_only_line = past_tokens[nl_position..-1].all?{ |c| c =~ /^\s+$/ }
-          unless comment_only_line then
-            tk = get_tk
-          end
-        end
-
-        if tk and (:on_comment == tk[:kind] or :on_embdoc == tk[:kind]) then
-          if non_comment_seen then
-            # Look for RDoc in a comment about to be thrown away
-            non_comment_seen = parse_comment container, tk, comment unless
-              comment.empty?
-
-            comment = ''
-            comment = RDoc::Encoding.change_encoding comment, @encoding if @encoding
-          end
-
-          line_no = nil
-          while tk and (:on_comment == tk[:kind] or :on_embdoc == tk[:kind]) do
-            comment_body = retrieve_comment_body(tk)
-            line_no = tk[:line_no] if comment.empty?
-            comment += comment_body
-            comment << "\n" unless comment_body =~ /\n\z/
-
-            if comment_body.size > 1 && comment_body =~ /\n\z/ then
-              skip_tkspace_without_nl # leading spaces
-            end
-            tk = get_tk
-          end
-
-          comment = new_comment comment, line_no
-
-          unless comment.empty? then
-            look_for_directives_in container, comment
-
-            if container.done_documenting then
-              throw :eof if RDoc::TopLevel === container
-              container.ongoing_visibility = save_visibility
-            end
-          end
-
-          keep_comment = true
-        else
-          non_comment_seen = true
-        end
-
-        unget_tk tk
-        keep_comment = true
-        container.current_line_visibility = nil
-
-      when :on_kw then
-        case tk[:text]
-        when 'class' then
-          parse_class container, single, tk, comment
-
-        when 'module' then
-          parse_module container, single, tk, comment
-
-        when 'def' then
-          parse_method container, single, tk, comment
-
-        when 'alias' then
-          parse_alias container, single, tk, comment unless current_method
-
-        when 'yield' then
-          if current_method.nil? then
-            warn "Warning: yield outside of method" if container.document_self
-          else
-            parse_yield container, single, tk, current_method
-          end
-
-        when 'until', 'while' then
-          if (tk[:state] & Ripper::EXPR_LABEL) == 0
-            nest += 1
-            skip_optional_do_after_expression
-          end
-
-        # Until and While can have a 'do', which shouldn't increase the nesting.
-        # We can't solve the general case, but we can handle most occurrences by
-        # ignoring a do at the end of a line.
-
-        # 'for' is trickier
-        when 'for' then
-          nest += 1
-          skip_for_variable
-          skip_optional_do_after_expression
-
-        when 'case', 'do', 'if', 'unless', 'begin' then
-          if (tk[:state] & Ripper::EXPR_LABEL) == 0
-            nest += 1
-          end
-
-        when 'super' then
-          current_method.calls_super = true if current_method
-
-        when 'rescue' then
-          parse_rescue
-
-        when 'end' then
-          nest -= 1
-          if nest == 0 then
-            container.ongoing_visibility = save_visibility
-
-            parse_comment container, tk, comment unless comment.empty?
-
-            return
-          end
-        end
-
-      when :on_const then
-        unless parse_constant container, tk, comment, current_method then
-          try_parse_comment = true
-        end
-
-      when :on_ident then
-        if nest == 1 and current_method.nil? then
-          keep_comment = parse_identifier container, single, tk, comment
-        end
-
-        case tk[:text]
-        when "require" then
-          parse_require container, comment
-        when "include" then
-          parse_extend_or_include RDoc::Include, container, comment
-        when "extend" then
-          parse_extend_or_include RDoc::Extend, container, comment
-        when "included" then
-          parse_included_with_activesupport_concern container, comment
-        end
-
-      else
-        try_parse_comment = nest == 1
-      end
-
-      if try_parse_comment then
-        non_comment_seen = parse_comment container, tk, comment unless
-          comment.empty?
-
-        keep_comment = false
-      end
-
-      unless keep_comment then
-        comment = new_comment ''
-        comment = RDoc::Encoding.change_encoding comment, @encoding if @encoding
-        container.params = nil
-        container.block_params = nil
-      end
-
-      consume_trailing_spaces
-    end
-
-    container.params = nil
-    container.block_params = nil
-  end
-
-  ##
-  # Parse up to +no+ symbol arguments
-
-  def parse_symbol_arg(no = nil)
-    skip_tkspace_comment
-
-    tk = get_tk
-    if tk[:kind] == :on_lparen
-      parse_symbol_arg_paren no
-    else
-      parse_symbol_arg_space no, tk
-    end
-  end
-
-  ##
-  # Parses up to +no+ symbol arguments surrounded by () and places them in
-  # +args+.
-
-  def parse_symbol_arg_paren no # :nodoc:
-    args = []
-
-    loop do
-      skip_tkspace_comment
-      if tk1 = parse_symbol_in_arg
-        args.push tk1
-        break if no and args.size >= no
-      end
-
-      skip_tkspace_comment
-      case (tk2 = get_tk)[:kind]
-      when :on_rparen
-        break
-      when :on_comma
-      else
-        warn("unexpected token: '#{tk2.inspect}'") if $DEBUG_RDOC
-        break
-      end
-    end
-
-    args
-  end
-
-  ##
-  # Parses up to +no+ symbol arguments separated by spaces and places them in
-  # +args+.
-
-  def parse_symbol_arg_space no, tk # :nodoc:
-    args = []
-
-    unget_tk tk
-    if tk = parse_symbol_in_arg
-      args.push tk
-      return args if no and args.size >= no
-    end
-
-    loop do
-      skip_tkspace_without_nl
-
-      tk1 = get_tk
-      if tk1.nil? || :on_comma != tk1[:kind] then
-        unget_tk tk1
-        break
-      end
-
-      skip_tkspace_comment
-      if tk = parse_symbol_in_arg
-        args.push tk
-        break if no and args.size >= no
-      end
-    end
-
-    args
-  end
-
-  ##
-  # Returns symbol text from the next token
-
-  def parse_symbol_in_arg
-    tk = get_tk
-    if :on_symbol == tk[:kind] then
-      tk[:text].sub(/^:/, '')
-    elsif :on_tstring == tk[:kind] then
-      tk[:text][1..-2]
-    elsif :on_dstring == tk[:kind] or :on_ident == tk[:kind] then
-      nil # ignore
-    else
-      warn("Expected symbol or string, got #{tk.inspect}") if $DEBUG_RDOC
-      nil
-    end
-  end
-
-  ##
-  # Parses statements in the top-level +container+
-
-  def parse_top_level_statements container
-    comment = collect_first_comment
-
-    look_for_directives_in container, comment
-
-    throw :eof if container.done_documenting
-
-    @markup = comment.format
-
-    # HACK move if to RDoc::Context#comment=
-    container.comment = comment if container.document_self unless comment.empty?
-
-    parse_statements container, NORMAL, nil, comment
-  end
-
-  ##
-  # Determines the visibility in +container+ from +tk+
-
-  def parse_visibility(container, single, tk)
-    vis_type, vis, singleton = get_visibility_information tk, single
-
-    skip_tkspace_comment false
-
-    ptk = peek_tk
-    # Ryan Davis suggested the extension to ignore modifiers, because he
-    # often writes
-    #
-    #   protected unless $TESTING
-    #
-    if [:on_nl, :on_semicolon].include?(ptk[:kind]) || (:on_kw == ptk[:kind] && (['if', 'unless'].include?(ptk[:text]))) then
-      container.ongoing_visibility = vis
-    elsif :on_kw == ptk[:kind] && 'def' == ptk[:text]
-      container.current_line_visibility = vis
-    else
-      update_visibility container, vis_type, vis, singleton
-    end
-  end
-
-  ##
-  # Parses a Module#private_constant or Module#public_constant call from +tk+.
-
-  def parse_constant_visibility(container, single, tk)
-    args = parse_symbol_arg
-    case tk[:text]
-    when 'private_constant'
-      vis = :private
-    when 'public_constant'
-      vis = :public
-    else
-      raise RDoc::Error, 'Unreachable'
-    end
-    container.set_constant_visibility_for args, vis
-  end
-
-  ##
-  # Determines the block parameter for +context+
-
-  def parse_yield(context, single, tk, method)
-    return if method.block_params
-
-    get_tkread
-    method.block_params = parse_method_or_yield_parameters
-  end
-
-  ##
-  # Directives are modifier comments that can appear after class, module, or
-  # method names. For example:
-  #
-  #   def fred # :yields: a, b
-  #
-  # or:
-  #
-  #   class MyClass # :nodoc:
-  #
-  # We return the directive name and any parameters as a two element array if
-  # the name is in +allowed+.  A directive can be found anywhere up to the end
-  # of the current line.
-
-  def read_directive allowed
-    tokens = []
-
-    while tk = get_tk do
-      tokens << tk
-
-      if :on_nl == tk[:kind] or (:on_kw == tk[:kind] && 'def' == tk[:text]) then
-        return
-      elsif :on_comment == tk[:kind] or :on_embdoc == tk[:kind] then
-        return unless tk[:text] =~ /:?\b([\w-]+):\s*(.*)/
-
-        directive = $1.downcase
-
-        return [directive, $2] if allowed.include? directive
-
-        return
-      end
-    end
+    yield container
   ensure
-    unless tokens.length == 1 and (:on_comment == tokens.first[:kind] or :on_embdoc == tokens.first[:kind]) then
-      tokens.reverse_each do |token|
-        unget_tk token
-      end
-    end
+    @container = old_container
+    @visibility = old_visibility
+    @singleton = old_singleton
+    @module_nesting.pop unless singleton
   end
 
-  ##
-  # Handles directives following the definition for +context+ (any
-  # RDoc::CodeObject) if the directives are +allowed+ at this point.
-  #
-  # See also RDoc::Markup::PreProcess#handle_directive
-
-  def read_documentation_modifiers context, allowed
-    skip_tkspace_without_nl
-    directive, value = read_directive allowed
-
-    return unless directive
-
-    @preprocess.handle_directive '', directive, value, context do |dir, param|
-      if %w[notnew not_new not-new].include? dir then
-        context.dont_rename_initialize = true
-
-        true
-      end
-    end
-  end
-
-  ##
   # Records the location of this +container+ in the file for this parser and
   # adds it to the list of classes and modules in the file.
 
@@ -2197,176 +194,890 @@ class RDoc::Parser::Ruby < RDoc::Parser
     container.record_location @top_level
   end
 
-  ##
   # Scans this Ruby file for Ruby constructs
 
   def scan
-    reset
+    @tokens = RDoc::Parser::RipperStateLex.parse(@content).sort_by { |t| [t.line_no, t.char_no] }
+    @lines = @content.lines
+    result = Prism.parse(@content)
+    @program_node = result.value
+    @line_nodes = {}
+    prepare_line_nodes(@program_node)
+    prepare_comments(result.comments)
+    return if @top_level.done_documenting
 
-    catch :eof do
-      begin
-        parse_top_level_statements @top_level
-
-      rescue StandardError => e
-        if @content.include?('<%') and @content.include?('%>') then
-          # Maybe, this is ERB.
-          $stderr.puts "\033[2KRDoc detects ERB file. Skips it for compatibility:"
-          $stderr.puts @file_name
-          return
-        end
-
-        if @scanner_point >= @scanner.size
-          now_line_no = @scanner[@scanner.size - 1][:line_no]
-        else
-          now_line_no = peek_tk[:line_no]
-        end
-        first_tk_index = @scanner.find_index { |tk| tk[:line_no] == now_line_no }
-        last_tk_index = @scanner.find_index { |tk| tk[:line_no] == now_line_no + 1 }
-        last_tk_index = last_tk_index ? last_tk_index - 1 : @scanner.size - 1
-        code = @scanner[first_tk_index..last_tk_index].map{ |t| t[:text] }.join
-
-        $stderr.puts <<-EOF
-
-#{self.class} failure around line #{now_line_no} of
-#{@file_name}
-
-        EOF
-
-        unless code.empty? then
-          $stderr.puts code
-          $stderr.puts
-        end
-
-        raise e
-      end
+    @first_non_meta_comment = nil
+    if (_line_no, start_line, rdoc_comment = @unprocessed_comments.first)
+      @first_non_meta_comment = rdoc_comment if start_line < @program_node.location.start_line
     end
 
-    @top_level
+    @program_node.accept(RDocVisitor.new(self, @top_level, @store))
+    process_comments_until(@lines.size + 1)
   end
 
-  ##
-  # while, until, and for have an optional do
+  def should_document?(code_object) # :nodoc:
+    return true unless @track_visibility
+    return false if code_object.parent&.document_children == false
+    code_object.document_self
+  end
 
-  def skip_optional_do_after_expression
-    skip_tkspace_without_nl
-    tk = get_tk
+  # Assign AST node to a line.
+  # This is used to show meta-method source code in the documentation.
 
-    b_nest = 0
-    nest = 0
-
-    loop do
-      break unless tk
-      case tk[:kind]
-      when :on_semicolon, :on_nl, :on_ignored_nl then
-        break if b_nest.zero?
-      when :on_lparen then
-        nest += 1
-      when :on_rparen then
-        nest -= 1
-      when :on_kw then
-        case tk[:text]
-        when 'begin'
-          b_nest += 1
-        when 'end'
-          b_nest -= 1
-        when 'do'
-          break if nest.zero?
-        end
-      when :on_comment, :on_embdoc then
-        if b_nest.zero? and "\n" == tk[:text][-1] then
-          break
-        end
-      end
-      tk = get_tk
+  def prepare_line_nodes(node) # :nodoc:
+    case node
+    when Prism::CallNode, Prism::DefNode
+      @line_nodes[node.location.start_line] ||= node
     end
-
-    skip_tkspace_without_nl
-
-    get_tk if peek_tk && :on_kw == peek_tk[:kind] && 'do' == peek_tk[:text]
-  end
-
-  ##
-  # skip the var [in] part of a 'for' statement
-
-  def skip_for_variable
-    skip_tkspace_without_nl
-    get_tk
-    skip_tkspace_without_nl
-    tk = get_tk
-    unget_tk(tk) unless :on_kw == tk[:kind] and 'in' == tk[:text]
-  end
-
-  ##
-  # Skips the next method in +container+
-
-  def skip_method container
-    meth = RDoc::AnyMethod.new "", "anon"
-    parse_method_parameters meth
-    parse_statements container, false, meth
-  end
-
-  ##
-  # Skip spaces until a comment is found
-
-  def skip_tkspace_comment(skip_nl = true)
-    loop do
-      skip_nl ? skip_tkspace : skip_tkspace_without_nl
-      next_tk = peek_tk
-      return if next_tk.nil? || (:on_comment != next_tk[:kind] and :on_embdoc != next_tk[:kind])
-      get_tk
+    node.compact_child_nodes.each do |child|
+      prepare_line_nodes(child)
     end
   end
 
-  ##
-  # Updates visibility in +container+ from +vis_type+ and +vis+.
+  # Prepares comments for processing. Comments are grouped into consecutive.
+  # Consecutive comment is linked to the next non-blank line.
+  #
+  # Example:
+  #   01| class A # modifier comment 1
+  #   02|   def foo; end # modifier comment 2
+  #   03|
+  #   04|   # consecutive comment 1 start_line: 4
+  #   05|   # consecutive comment 1 linked to line: 7
+  #   06|
+  #   07|   # consecutive comment 2 start_line: 7
+  #   08|   # consecutive comment 2 linked to line: 10
+  #   09|
+  #   10|   def bar; end # consecutive comment 2 linked to this line
+  #   11| end
 
-  def update_visibility container, vis_type, vis, singleton # :nodoc:
-    new_methods = []
-
-    case vis_type
-    when 'module_function' then
-      args = parse_symbol_arg
-      container.set_visibility_for args, :private, false
-
-      container.methods_matching args do |m|
-        s_m = m.dup
-        record_location s_m
-        s_m.singleton = true
-        new_methods << s_m
+  def prepare_comments(comments)
+    current = []
+    consecutive_comments = [current]
+    @modifier_comments = {}
+    comments.each do |comment|
+      if comment.is_a? Prism::EmbDocComment
+        consecutive_comments << [comment] << (current = [])
+      elsif comment.location.start_line_slice.match?(/\S/)
+        @modifier_comments[comment.location.start_line] = RDoc::Comment.new(comment.slice, @top_level, :ruby)
+      elsif current.empty? || current.last.location.end_line + 1 == comment.location.start_line
+        current << comment
+      else
+        consecutive_comments << (current = [comment])
       end
-    when 'public_class_method', 'private_class_method' then
-      args = parse_symbol_arg
+    end
 
-      container.methods_matching args, true do |m|
-        if m.parent != container then
-          m = m.dup
-          record_location m
-          new_methods << m
-        end
+    # Example: line_no = 5, start_line = 2, comment_text = "# comment_start_line\n# comment\n"
+    # 1| class A
+    # 2|   # comment_start_line
+    # 3|   # comment
+    # 4|
+    # 5|   def f; end # comment linked to this line
+    # 6| end
+    @unprocessed_comments = consecutive_comments.reject(&:empty?).map do |comments|
+      start_line = comments.first.location.start_line
+      line_no = comments.last.location.end_line + (comments.last.location.end_column == 0 ? 0 : 1)
+      texts = comments.map do |c|
+        c.is_a?(Prism::EmbDocComment) ? c.slice.lines[1...-1].join : c.slice
+      end
+      text = RDoc::Encoding.change_encoding(texts.join("\n"), @encoding) if @encoding
+      line_no += 1 while @lines[line_no - 1]&.match?(/\A\s*$/)
+      comment = RDoc::Comment.new(text, @top_level, :ruby)
+      comment.line = start_line
+      [line_no, start_line, comment]
+    end
 
-        m.visibility = vis
+    # The first comment is special. It defines markup for the rest of the comments.
+    _, first_comment_start_line, first_comment_text = @unprocessed_comments.first
+    if first_comment_text && @lines[0...first_comment_start_line - 1].all? { |l| l.match?(/\A\s*$/) }
+      comment = RDoc::Comment.new(first_comment_text.text, @top_level, :ruby)
+      handle_consecutive_comment_directive(@container, comment)
+      @markup = comment.format
+    end
+    @unprocessed_comments.each do |_, _, comment|
+      comment.format = @markup
+    end
+  end
+
+  # Creates an RDoc::Method on +container+ from +comment+ if there is a
+  # Signature section in the comment
+
+  def parse_comment_tomdoc(container, comment, line_no, start_line)
+    return unless signature = RDoc::TomDoc.signature(comment)
+
+    name, = signature.split %r%[ \(]%, 2
+
+    meth = RDoc::GhostMethod.new comment.text, name
+    record_location(meth)
+    meth.line = start_line
+    meth.call_seq = signature
+    return unless meth.name
+
+    meth.start_collecting_tokens
+    node = @line_nodes[line_no]
+    tokens = node ? visible_tokens_from_location(node.location) : [file_line_comment_token(start_line)]
+    tokens.each { |token| meth.token_stream << token }
+
+    container.add_method meth
+    comment.remove_private
+    comment.normalize
+    meth.comment = comment
+    @stats.add_method meth
+  end
+
+  def handle_modifier_directive(code_object, line_no) # :nodoc:
+    comment = @modifier_comments[line_no]
+    @preprocess.handle(comment.text, code_object) if comment
+  end
+
+  def handle_consecutive_comment_directive(code_object, comment) # :nodoc:
+    return unless comment
+    @preprocess.handle(comment, code_object) do |directive, param|
+      case directive
+      when 'method', 'singleton-method',
+           'attr', 'attr_accessor', 'attr_reader', 'attr_writer' then
+        # handled elsewhere
+        ''
+      when 'section' then
+        @container.set_current_section(param, comment.dup)
+        comment.text = ''
+        break
+      end
+    end
+    comment.remove_private
+  end
+
+  def call_node_name_arguments(call_node) # :nodoc:
+    return [] unless call_node.arguments
+    call_node.arguments.arguments.map do |arg|
+      case arg
+      when Prism::SymbolNode
+        arg.value
+      when Prism::StringNode
+        arg.unescaped
+      end
+    end || []
+  end
+
+  # Handles meta method comments
+
+  def handle_meta_method_comment(comment, node)
+    is_call_node = node.is_a?(Prism::CallNode)
+    singleton_method = false
+    visibility = @visibility
+    attributes = rw = line_no = method_name = nil
+
+    processed_comment = comment.dup
+    @preprocess.handle(processed_comment, @container) do |directive, param, line|
+      case directive
+      when 'attr', 'attr_reader', 'attr_writer', 'attr_accessor'
+        attributes = [param] if param
+        attributes ||= call_node_name_arguments(node) if is_call_node
+        rw = directive == 'attr_writer' ? 'W' : directive == 'attr_accessor' ? 'RW' : 'R'
+        ''
+      when 'method'
+        method_name = param
+        line_no = node ? node.location.start_line : line
+        ''
+      when 'singleton-method'
+        method_name = param
+        line_no = node ? node.location.start_line : line
+        singleton_method = true
+        visibility = :public
+        ''
+      when 'section' then
+        @container.set_current_section(param, comment.dup)
+        return # If the comment contains :section:, it is not a meta method comment
+      end
+    end
+
+    if attributes
+      attributes.each do |attr|
+        a = RDoc::Attr.new(@container, attr, rw, processed_comment)
+        a.store = @store
+        a.line = line_no
+        a.singleton = @singleton
+        record_location(a)
+        @container.add_attribute(a)
+        a.visibility = visibility
       end
     else
-      args = parse_symbol_arg
-      container.set_visibility_for args, vis, singleton
+      method_name ||= call_node_name_arguments(node).first if is_call_node
+      meth = RDoc::AnyMethod.new(@container, method_name)
+      meth.singleton = @singleton || singleton_method
+      handle_consecutive_comment_directive(meth, comment)
+      comment.normalize
+      comment.extract_call_seq(meth)
+      meth.name ||= meth.call_seq[/\A[^()\s]+/] if meth.call_seq
+      meth.name ||= 'unknown'
+      meth.params ||= '()'
+      meth.comment = comment
+      meth.store = @store
+      meth.line = node ? node.location.start_line : line_no
+      record_location(meth)
+      if node
+        meth.start_collecting_tokens
+        visible_tokens_from_location(node.location).each do |token|
+          meth.token_stream << token
+        end
+      end
+      @container.add_method(meth)
+      meth.visibility = visibility
+    end
+  end
+
+  def normal_comment_treat_as_ghost_method_for_now?(comment_text, line_no) # :nodoc:
+    # Meta method comment should start with `##` but some comments does not follow this rule.
+    # For now, RDoc accepts them as a meta method comment if there is no node linked to it.
+    !@line_nodes[line_no] && comment_text.match?(/^#\s+:(method|singleton-method|attr|attr_reader|attr_writer|attr_accessor):/)
+  end
+
+  def handle_standalone_consecutive_comment_directive(comment, line_no, start_line) # :nodoc:
+    if @markup == 'tomdoc'
+      parse_comment_tomdoc(@container, comment, line_no, start_line)
+      return
     end
 
+    if comment.text =~ /\A#\#$/ && comment != @first_non_meta_comment
+      node = @line_nodes[line_no]
+      handle_meta_method_comment(comment, node)
+    elsif normal_comment_treat_as_ghost_method_for_now?(comment.text, line_no) && comment != @first_non_meta_comment
+      handle_meta_method_comment(comment, nil)
+    else
+      handle_consecutive_comment_directive(@container, comment)
+    end
+  end
+
+  # Processes consecutive comments that were not linked to any documentable code until the given line number
+
+  def process_comments_until(line_no_until)
+    while !@unprocessed_comments.empty? && @unprocessed_comments.first[0] <= line_no_until
+      line_no, start_line, rdoc_comment = @unprocessed_comments.shift
+      handle_standalone_consecutive_comment_directive(rdoc_comment, line_no, start_line)
+    end
+  end
+
+  # Skips all undocumentable consecutive comments until the given line number.
+  # Undocumentable comments are comments written inside `def` or inside undocumentable class/module
+
+  def skip_comments_until(line_no_until)
+    while !@unprocessed_comments.empty? && @unprocessed_comments.first[0] <= line_no_until
+      @unprocessed_comments.shift
+    end
+  end
+
+  # Returns consecutive comment linked to the given line number
+
+  def consecutive_comment(line_no)
+    if @unprocessed_comments.first&.first == line_no
+      @unprocessed_comments.shift.last
+    end
+  end
+
+  def slice_tokens(start_pos, end_pos) # :nodoc:
+    start_index = @tokens.bsearch_index { |t| ([t.line_no, t.char_no] <=> start_pos) >= 0 }
+    end_index = @tokens.bsearch_index { |t| ([t.line_no, t.char_no] <=> end_pos) >= 0 }
+    tokens = @tokens[start_index...end_index]
+    tokens.pop if tokens.last&.kind == :on_nl
+    tokens
+  end
+
+  def file_line_comment_token(line_no) # :nodoc:
+    position_comment = RDoc::Parser::RipperStateLex::Token.new(line_no - 1, 0, :on_comment)
+    position_comment[:text] = "# File #{@top_level.relative_name}, line #{line_no}"
+    position_comment
+  end
+
+  # Returns tokens from the given location
+
+  def visible_tokens_from_location(location)
+    position_comment = file_line_comment_token(location.start_line)
+    newline_token = RDoc::Parser::RipperStateLex::Token.new(0, 0, :on_nl, "\n")
+    indent_token = RDoc::Parser::RipperStateLex::Token.new(location.start_line, 0, :on_sp, ' ' * location.start_character_column)
+    tokens = slice_tokens(
+      [location.start_line, location.start_character_column],
+      [location.end_line, location.end_character_column]
+    )
+    [position_comment, newline_token, indent_token, *tokens]
+  end
+
+  # Handles `public :foo, :bar` `private :foo, :bar` and `protected :foo, :bar`
+
+  def change_method_visibility(names, visibility, singleton: @singleton)
+    new_methods = []
+    @container.methods_matching(names, singleton) do |m|
+      if m.parent != @container
+        m = m.dup
+        record_location(m)
+        new_methods << m
+      else
+        m.visibility = visibility
+      end
+    end
     new_methods.each do |method|
       case method
       when RDoc::AnyMethod then
-        container.add_method method
+        @container.add_method(method)
       when RDoc::Attr then
-        container.add_attribute method
+        @container.add_attribute(method)
       end
-      method.visibility = vis
+      method.visibility = visibility
     end
   end
 
-  ##
-  # Prints +message+ to +$stderr+ unless we're being quiet
+  # Handles `module_function :foo, :bar`
 
-  def warn message
-    @options.warn make_message message
+  def change_method_to_module_function(names)
+    @container.set_visibility_for(names, :private, false)
+    new_methods = []
+    @container.methods_matching(names) do |m|
+      s_m = m.dup
+      record_location(s_m)
+      s_m.singleton = true
+      new_methods << s_m
+    end
+    new_methods.each do |method|
+      case method
+      when RDoc::AnyMethod then
+        @container.add_method(method)
+      when RDoc::Attr then
+        @container.add_attribute(method)
+      end
+      method.visibility = :public
+    end
   end
 
+  # Handles `alias foo bar` and `alias_method :foo, :bar`
+
+  def add_alias_method(old_name, new_name, line_no)
+    comment = consecutive_comment(line_no)
+    handle_consecutive_comment_directive(@container, comment)
+    visibility = @container.find_method(old_name, @singleton)&.visibility || :public
+    a = RDoc::Alias.new(nil, old_name, new_name, comment, @singleton)
+    a.comment = comment
+    handle_modifier_directive(a, line_no)
+    a.store = @store
+    a.line = line_no
+    record_location(a)
+    if should_document?(a)
+      @container.add_alias(a)
+      @container.find_method(new_name, @singleton)&.visibility = visibility
+    end
+  end
+
+  # Handles `attr :a, :b`, `attr_reader :a, :b`, `attr_writer :a, :b` and `attr_accessor :a, :b`
+
+  def add_attributes(names, rw, line_no)
+    comment = consecutive_comment(line_no)
+    handle_consecutive_comment_directive(@container, comment)
+    return unless @container.document_children
+
+    names.each do |symbol|
+      a = RDoc::Attr.new(nil, symbol.to_s, rw, comment)
+      a.store = @store
+      a.line = line_no
+      a.singleton = @singleton
+      record_location(a)
+      handle_modifier_directive(a, line_no)
+      @container.add_attribute(a) if should_document?(a)
+      a.visibility = visibility # should set after adding to container
+    end
+  end
+
+  def add_includes_extends(names, rdoc_class, line_no) # :nodoc:
+    comment = consecutive_comment(line_no)
+    handle_consecutive_comment_directive(@container, comment)
+    names.each do |name|
+      ie = @container.add(rdoc_class, name, '')
+      ie.store = @store
+      ie.line = line_no
+      ie.comment = comment
+      record_location(ie)
+    end
+  end
+
+  # Handle `include Foo, Bar`
+
+  def add_includes(names, line_no) # :nodoc:
+    add_includes_extends(names, RDoc::Include, line_no)
+  end
+
+  # Handle `extend Foo, Bar`
+
+  def add_extends(names, line_no) # :nodoc:
+    add_includes_extends(names, RDoc::Extend, line_no)
+  end
+
+  # Adds a method defined by `def` syntax
+
+  def add_method(name, receiver_name:, receiver_fallback_type:, visibility:, singleton:, signature:, tokens:, start_line:, end_line:)
+    receiver = receiver_name ? find_or_create_module_path(receiver_name, receiver_fallback_type) : @container
+    meth = RDoc::AnyMethod.new(nil, name)
+    if (comment = consecutive_comment(start_line))
+      handle_consecutive_comment_directive(@container, comment)
+      handle_consecutive_comment_directive(meth, comment)
+
+      comment.normalize
+      comment.extract_call_seq(meth)
+      meth.comment = comment
+    end
+    handle_modifier_directive(meth, start_line)
+    handle_modifier_directive(meth, end_line)
+    return unless should_document?(meth)
+
+    meth.store = @store
+    meth.line = start_line
+
+    if meth.name == 'initialize' && !singleton
+      if meth.dont_rename_initialize
+        visibility = :protected
+      else
+        meth.name = 'new'
+        singleton = true
+        visibility = :public
+      end
+    end
+
+    meth.singleton = singleton
+    receiver.add_method(meth) # should add after setting singleton and before setting visibility
+    meth.visibility = visibility
+    if signature
+      meth.params ||= signature.params
+      meth.calls_super = signature.calls_super
+      meth.block_params ||= signature.yields.first unless signature.yields.empty?
+    end
+    record_location(meth)
+    meth.start_collecting_tokens
+    tokens.each do |token|
+      meth.token_stream << token
+    end
+  end
+
+  # Find or create module or class from a given module name.
+  # If module or class does not exist, creates a module or a class according to `create_mode` argument.
+
+  def find_or_create_module_path(module_name, create_mode)
+    root_name, *path, name = module_name.split('::')
+    add_module = ->(mod, name, mode) {
+      case mode
+      when :class
+        mod.add_class(RDoc::NormalClass, name, 'Object').tap { |m| m.store = @store }
+      when :module
+        mod.add_module(RDoc::NormalModule, name).tap { |m| m.store = @store }
+      end
+    }
+    if root_name.empty?
+      mod = @top_level
+    else
+      nesting = @container
+      @module_nesting.reverse_each do |nesting|
+        mod = nesting.find_module_named(root_name)
+        break if mod
+      end
+      return mod || add_module.call(@top_level, root_name, create_mode) unless name
+      mod ||= add_module.call(@top_level, root_name, :module)
+    end
+    path.each do |name|
+      mod = mod.find_module_named(name) || add_module.call(mod, name, :module)
+    end
+    mod.find_module_named(name) || add_module.call(mod, name, create_mode)
+  end
+
+  # Resolves constant path to a full path by searching module nesting
+
+  def resolve_constant_path(constant_path)
+    owner_name, path = constant_path.split('::', 2)
+    return constant_path if owner_name.empty? # ::Foo, ::Foo::Bar
+    mod = nil
+    @module_nesting.reverse_each do |nesting|
+      mod = nesting.find_module_named(owner_name)
+      break if mod
+    end
+    mod ||= @top_level.find_module_named(owner_name)
+    [mod.full_name, path].compact.join('::') if mod
+  end
+
+  # Returns a pair of owner module and constant name from a given constant path.
+  # Creates owner module if it does not exist.
+
+  def find_or_create_constant_owner_name(constant_path)
+    const_path, colon, name = constant_path.rpartition('::')
+    if colon.empty? # class Foo
+      [@container, name]
+    elsif const_path.empty? # class ::Foo
+      [@top_level, name]
+    else # `class Foo::Bar` or `class ::Foo::Bar`
+      [find_or_create_module_path(const_path, :module), name]
+    end
+  end
+
+  # Adds a constant
+
+  def add_constant(constant_name, rhs_name, start_line, end_line)
+    comment = consecutive_comment(start_line)
+    handle_consecutive_comment_directive(@container, comment)
+    owner, name = find_or_create_constant_owner_name(constant_name)
+    constant = RDoc::Constant.new(name, rhs_name, comment)
+    constant.store = @store
+    constant.line = start_line
+    record_location(constant)
+    handle_modifier_directive(constant, start_line)
+    handle_modifier_directive(constant, end_line)
+    owner.add_constant(constant)
+    mod =
+      if rhs_name =~ /^::/
+        @store.find_class_or_module(rhs_name)
+      else
+        @container.find_module_named(rhs_name)
+      end
+    if mod && constant.document_self
+      a = @container.add_module_alias(mod, rhs_name, constant, @top_level)
+      a.store = @store
+      a.line = start_line
+      record_location(a)
+    end
+  end
+
+  # Adds module or class
+
+  def add_module_or_class(module_name, start_line, end_line, is_class: false, superclass_name: nil)
+    comment = consecutive_comment(start_line)
+    handle_consecutive_comment_directive(@container, comment)
+    return unless @container.document_children
+
+    owner, name = find_or_create_constant_owner_name(module_name)
+    if is_class
+      mod = owner.classes_hash[name] || owner.add_class(RDoc::NormalClass, name, superclass_name || '::Object')
+
+      # RDoc::NormalClass resolves superclass name despite of the lack of module nesting information.
+      # We need to fix it when RDoc::NormalClass resolved to a wrong constant name
+      if superclass_name
+        superclass_full_path = resolve_constant_path(superclass_name)
+        superclass = @store.find_class_or_module(superclass_full_path) if superclass_full_path
+        superclass_full_path ||= superclass_name
+        if superclass
+          mod.superclass = superclass
+        elsif mod.superclass.is_a?(String) && mod.superclass != superclass_full_path
+          mod.superclass = superclass_full_path
+        end
+      end
+    else
+      mod = owner.modules_hash[name] || owner.add_module(RDoc::NormalModule, name)
+    end
+
+    mod.store = @store
+    mod.line = start_line
+    record_location(mod)
+    handle_modifier_directive(mod, start_line)
+    handle_modifier_directive(mod, end_line)
+    mod.add_comment(comment, @top_level) if comment
+    mod
+  end
+
+  class RDocVisitor < Prism::Visitor # :nodoc:
+    DSL = {
+      attr: -> (v, call_node) { v.visit_call_attr_reader_writer_accessor(call_node, 'R') },
+      attr_reader: -> (v, call_node) { v.visit_call_attr_reader_writer_accessor(call_node, 'R') },
+      attr_writer: -> (v, call_node) { v.visit_call_attr_reader_writer_accessor(call_node, 'W') },
+      attr_accessor: -> (v, call_node) { v.visit_call_attr_reader_writer_accessor(call_node, 'RW') },
+      include: -> (v, call_node) { v.visit_call_include(call_node) },
+      extend: -> (v, call_node) { v.visit_call_extend(call_node) },
+      public: -> (v, call_node, &block) { v.visit_call_public_private_protected(call_node, :public, &block) },
+      private: -> (v, call_node, &block) { v.visit_call_public_private_protected(call_node, :private, &block) },
+      protected: -> (v, call_node, &block) { v.visit_call_public_private_protected(call_node, :protected, &block) },
+      private_constant: -> (v, call_node) { v.visit_call_private_constant(call_node) },
+      public_constant: -> (v, call_node) { v.visit_call_public_constant(call_node) },
+      require: -> (v, call_node) { v.visit_call_require(call_node) },
+      alias_method: -> (v, call_node) { v.visit_call_alias_method(call_node) },
+      module_function: -> (v, call_node, &block) { v.visit_call_module_function(call_node, &block) },
+      public_class_method: -> (v, call_node, &block) { v.visit_call_public_private_class_method(call_node, :public, &block) },
+      private_class_method: -> (v, call_node, &block) { v.visit_call_public_private_class_method(call_node, :private, &block) },
+    }
+
+    def initialize(scanner, top_level, store)
+      @scanner = scanner
+      @top_level = top_level
+      @store = store
+    end
+
+    def visit_call_node(node)
+      @scanner.process_comments_until(node.location.start_line - 1)
+      if node.receiver.nil? && (dsl_proc = DSL[node.name])
+        dsl_proc.call(self, node) { super }
+      else
+        super
+      end
+    end
+
+    def visit_call_require(call_node)
+      return unless call_node.arguments&.arguments&.size == 1
+      arg = call_node.arguments.arguments.first
+      return unless arg.is_a?(Prism::StringNode)
+      @scanner.container.add_require(RDoc::Require.new(arg.unescaped, nil))
+    end
+
+    def visit_call_module_function(call_node)
+      yield
+      return if @scanner.singleton
+      names = visibility_method_arguments(call_node, singleton: false)&.map(&:to_s)
+      @scanner.change_method_to_module_function(names) if names
+    end
+
+    def visit_call_public_private_class_method(call_node, visibility)
+      yield
+      return if @scanner.singleton
+      names = visibility_method_arguments(call_node, singleton: true)
+      @scanner.change_method_visibility(names, visibility, singleton: true) if names
+    end
+
+    def visit_call_public_private_protected(call_node, visibility)
+      arguments_node = call_node.arguments
+      if arguments_node.nil? # `public` `private`
+        @scanner.visibility = visibility
+      else # `public :foo, :bar`, `private def foo; end`
+        yield
+        names = visibility_method_arguments(call_node, singleton: @scanner.singleton)
+        @scanner.change_method_visibility(names, visibility) if names
+      end
+    end
+
+    def visit_call_alias_method(call_node)
+      new_name, old_name, *rest = symbol_arguments(call_node)
+      return unless old_name && new_name && rest.empty?
+      @scanner.add_alias_method(old_name.to_s, new_name.to_s, call_node.location.start_line)
+    end
+
+    def visit_call_include(call_node)
+      names = constant_arguments_names(call_node)
+      line_no = call_node.location.start_line
+      return unless names
+
+      if @scanner.singleton
+        @scanner.add_extends(names, line_no)
+      else
+        @scanner.add_includes(names, line_no)
+      end
+    end
+
+    def visit_call_extend(call_node)
+      names = constant_arguments_names(call_node)
+      @scanner.add_extends(names, call_node.location.start_line) if names && !@scanner.singleton
+    end
+
+    def visit_call_public_constant(call_node)
+      return if @scanner.singleton
+      names = symbol_arguments(call_node)
+      @scanner.container.set_constant_visibility_for(names.map(&:to_s), :public) if names
+    end
+
+    def visit_call_private_constant(call_node)
+      return if @scanner.singleton
+      names = symbol_arguments(call_node)
+      @scanner.container.set_constant_visibility_for(names.map(&:to_s), :private) if names
+    end
+
+    def visit_call_attr_reader_writer_accessor(call_node, rw)
+      names = symbol_arguments(call_node)
+      @scanner.add_attributes(names.map(&:to_s), rw, call_node.location.start_line) if names
+    end
+
+    def visit_alias_method_node(node)
+      @scanner.process_comments_until(node.location.start_line - 1)
+      return unless node.old_name.is_a?(Prism::SymbolNode) && node.new_name.is_a?(Prism::SymbolNode)
+      @scanner.add_alias_method(node.old_name.value.to_s, node.new_name.value.to_s, node.location.start_line)
+    end
+
+    def visit_module_node(node)
+      @scanner.process_comments_until(node.location.start_line - 1)
+      module_name = constant_path_string(node.constant_path)
+      mod = @scanner.add_module_or_class(module_name, node.location.start_line, node.location.end_line) if module_name
+      if mod
+        @scanner.with_container(mod) do
+          super
+          @scanner.process_comments_until(node.location.end_line)
+        end
+      else
+        @scanner.skip_comments_until(node.location.end_line)
+      end
+    end
+
+    def visit_class_node(node)
+      @scanner.process_comments_until(node.location.start_line - 1)
+      superclass_name = constant_path_string(node.superclass) if node.superclass
+      class_name = constant_path_string(node.constant_path)
+      klass = @scanner.add_module_or_class(class_name, node.location.start_line, node.location.end_line, is_class: true, superclass_name: superclass_name) if class_name
+      if klass
+        @scanner.with_container(klass) do
+          super
+          @scanner.process_comments_until(node.location.end_line)
+        end
+      else
+        @scanner.skip_comments_until(node.location.end_line)
+      end
+    end
+
+    def visit_singleton_class_node(node)
+      @scanner.process_comments_until(node.location.start_line - 1)
+
+      expression = node.expression
+      expression = expression.body.body.first if expression.is_a?(Prism::ParenthesesNode) && expression.body&.body&.size == 1
+
+      case expression
+      when Prism::ConstantWriteNode
+        # Accept `class << (NameErrorCheckers = Object.new)` as a module which is not actually a module
+        mod = @scanner.container.add_module(RDoc::NormalModule, expression.name.to_s)
+      when Prism::ConstantPathNode, Prism::ConstantReadNode
+        expression_name = constant_path_string(expression)
+        # If a constant_path does not exist, RDoc creates a module
+        mod = @scanner.find_or_create_module_path(expression_name, :module) if expression_name
+      when Prism::SelfNode
+        mod = @scanner.container if @scanner.container != @top_level
+      end
+      if mod
+        @scanner.with_container(mod, singleton: true) do
+          super
+          @scanner.process_comments_until(node.location.end_line)
+        end
+      else
+        @scanner.skip_comments_until(node.location.end_line)
+      end
+    end
+
+    def visit_def_node(node)
+      start_line = node.location.start_line
+      end_line = node.location.end_line
+      @scanner.process_comments_until(start_line - 1)
+
+      case node.receiver
+      when Prism::NilNode, Prism::TrueNode, Prism::FalseNode
+        visibility = :public
+        singleton = false
+        receiver_name = { Prism::NilNode => 'NilClass', Prism::TrueNode => 'TrueClass', Prism::FalseNode => 'FalseClass' }[node.receiver.class]
+        receiver_fallback_type = :class
+      when Prism::SelfNode
+        # singleton method of a singleton class is not documentable
+        return if @scanner.singleton
+        visibility = :public
+        singleton = true
+      when Prism::ConstantReadNode, Prism::ConstantPathNode
+        visibility = :public
+        singleton = true
+        receiver_name = constant_path_string(node.receiver)
+        receiver_fallback_type = :module
+        return unless receiver_name
+      when nil
+        visibility = @scanner.visibility
+        singleton = @scanner.singleton
+      else
+        # `def (unknown expression).method_name` is not documentable
+        return
+      end
+      name = node.name.to_s
+      signature = MethodSignature.new(node)
+      tokens = @scanner.visible_tokens_from_location(node.location)
+
+      @scanner.add_method(
+        name,
+        receiver_name: receiver_name,
+        receiver_fallback_type: receiver_fallback_type,
+        visibility: visibility,
+        singleton: singleton,
+        signature: signature,
+        tokens: tokens,
+        start_line: start_line,
+        end_line: end_line
+      )
+    ensure
+      @scanner.skip_comments_until(end_line)
+    end
+
+    def visit_constant_path_write_node(node)
+      @scanner.process_comments_until(node.location.start_line - 1)
+      path = constant_path_string(node.target)
+      return unless path
+
+      @scanner.add_constant(
+        path,
+        constant_path_string(node.value) || node.value.slice,
+        node.location.start_line,
+        node.location.end_line
+      )
+      @scanner.skip_comments_until(node.location.end_line)
+      # Do not traverse rhs not to document `A::B = Struct.new{def undocumentable_method; end}`
+    end
+
+    def visit_constant_write_node(node)
+      @scanner.process_comments_until(node.location.start_line - 1)
+      @scanner.add_constant(
+        node.name.to_s,
+        constant_path_string(node.value) || node.value.slice,
+        node.location.start_line,
+        node.location.end_line
+      )
+      @scanner.skip_comments_until(node.location.end_line)
+      # Do not traverse rhs not to document `A = Struct.new{def undocumentable_method; end}`
+    end
+
+    private
+
+    def constant_arguments_names(call_node)
+      return unless call_node.arguments
+      names = call_node.arguments.arguments.map { |arg| constant_path_string(arg) }
+      names.all? ? names : nil
+    end
+
+    def symbol_arguments(call_node)
+      arguments_node = call_node.arguments
+      return unless arguments_node && arguments_node.arguments.all? { |arg| arg.is_a?(Prism::SymbolNode)}
+      arguments_node.arguments.map { |arg| arg.value.to_sym }
+    end
+
+    def visibility_method_arguments(call_node, singleton:)
+      arguments_node = call_node.arguments
+      return unless arguments_node
+      symbols = symbol_arguments(call_node)
+      return symbols.map(&:to_s) if symbols # module_function :foo, :bar
+      return unless arguments_node.arguments.size == 1
+      arg = arguments_node.arguments.first
+      return unless arg.is_a?(Prism::DefNode)
+      # `module_function def foo; end` or `private_class_method def self.foo; end`
+      [arg.name.to_s] if singleton ? arg.receiver.is_a?(Prism::SelfNode) : arg.receiver.nil?
+    end
+
+    def constant_path_string(node)
+      case node
+      when Prism::ConstantReadNode
+        node.name.to_s
+      when Prism::ConstantPathNode
+        parent_name = node.parent ? constant_path_string(node.parent) : ''
+        "#{parent_name}::#{node.name}" if parent_name
+      end
+    end
+  end
+
+  class MethodSignature < Prism::Visitor # :nodoc:
+    attr_reader :yields, :calls_super, :params
+    def initialize(def_node)
+      @yields = []
+      @calls_super = false
+      @params = "(#{def_node.parameters&.slice})"
+      def_node.body&.accept(self)
+    end
+
+    def visit_def_node(node)
+      # stop traverse inside nested def
+    end
+
+    def visit_yield_node(node)
+      yields << (node.arguments&.slice || '')
+    end
+
+    def visit_super_node(node)
+      @calls_super = true
+      super
+    end
+
+    def visit_forwarding_super_node(node)
+      @calls_super = true
+    end
+  end
 end

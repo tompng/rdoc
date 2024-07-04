@@ -4,10 +4,6 @@ require_relative 'helper'
 
 class TestRDocParserRuby < RDoc::TestCase
 
-  def accept_master_branch_bug?
-    true
-  end
-
   def setup
     super
 
@@ -232,7 +228,7 @@ class TestRDocParserRuby < RDoc::TestCase
       module MBaz::M; end; # :nodoc:
     RUBY
     documentables = @store.all_classes_and_modules.select(&:document_self)
-    assert_equal ['Baz', 'MBaz'], documentables.map(&:full_name) unless accept_master_branch_bug?
+    assert_equal ['Baz', 'MBaz'], documentables.map(&:full_name)
   end
 
   def test_class_module_stopdoc
@@ -487,7 +483,7 @@ class TestRDocParserRuby < RDoc::TestCase
     assert_equal 'Foo#three', three.full_name
     assert_equal 'one()', one.arglists
     assert_equal 'two(x)', two.arglists
-    assert_equal 'three(x)', three.arglists unless accept_master_branch_bug?
+    assert_equal 'three(x)', three.arglists
     assert_equal 'my method one', one.comment.text.strip
     assert_equal 'my method two', two.comment.text.strip
     assert_equal 'my method three', three.comment.text.strip
@@ -583,7 +579,6 @@ class TestRDocParserRuby < RDoc::TestCase
     RUBY
 
     klass = @store.find_class_named 'Foo'
-    klass.method_list.last.singleton = true if accept_master_branch_bug?
     assert_equal 3, klass.method_list.size
     assert_equal ['Foo#foo', 'Foo#bar', 'Foo::baz'], klass.method_list.map(&:full_name)
     assert_equal [false, false, true], klass.method_list.map(&:singleton)
@@ -750,7 +745,6 @@ class TestRDocParserRuby < RDoc::TestCase
 
     klass = @store.find_class_named 'Foo'
     methods = klass.method_list
-    methods = methods.reject {|m| m.name =~ /dummy2|dummy4/ } if accept_master_branch_bug?
     assert_equal ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'], methods.map(&:name)
     assert_equal [true] * 6, methods.map(&:singleton)
   end
@@ -783,8 +777,7 @@ class TestRDocParserRuby < RDoc::TestCase
 
     klass = @store.find_class_named 'Foo'
     assert_equal ['m1', 'm2', 'm3', 'm4', 'm5'], klass.method_list.map(&:name)
-    expected = accept_master_branch_bug? ? [true, true, true, false, true] : [true] * 5
-    assert_equal expected, klass.method_list.map(&:singleton)
+    assert_equal [true] * 5, klass.method_list.map(&:singleton)
   end
 
   def test_method_nested_visibility
@@ -902,11 +895,6 @@ class TestRDocParserRuby < RDoc::TestCase
     klass = @store.find_class_named 'A'
     instance_methods = klass.method_list.reject(&:singleton)
     singleton_methods = klass.method_list.select(&:singleton)
-    if accept_master_branch_bug?
-      instance_methods.last.visibility = :private
-      singleton_methods << singleton_methods.last.dup
-      singleton_methods.last.name = 'm4'
-    end
     assert_equal ['m1', 'm2', 'm3', 'm4'], instance_methods.map(&:name)
     assert_equal [:private, :public, :private, :private], instance_methods.map(&:visibility)
     assert_equal ['m1', 'm3', 'm4'], singleton_methods.map(&:name)
@@ -927,7 +915,7 @@ class TestRDocParserRuby < RDoc::TestCase
     RUBY
     klass = @store.find_class_named 'A'
     public_methods = klass.method_list.select { |m| m.visibility == :public }
-    assert_equal ['m1', 'm3', 'm5'], public_methods.map(&:name) unless accept_master_branch_bug?
+    assert_equal ['m1', 'm3', 'm5'], public_methods.map(&:name)
   end
 
   def test_method_change_visibility
@@ -959,7 +947,6 @@ class TestRDocParserRuby < RDoc::TestCase
   end
 
   def test_method_visibility_change_in_subclass
-    pend 'not implemented' if accept_master_branch_bug?
     util_parser <<~RUBY
       class A
         def m1; end
@@ -1061,12 +1048,10 @@ class TestRDocParserRuby < RDoc::TestCase
     assert_equal 'bar2', bar2.name
     assert_equal 'foo', foo2.is_alias_for.name
     assert_equal 'bar', bar2.is_alias_for.name
-    unless accept_master_branch_bug?
-      assert_equal :private, foo.visibility
-      assert_equal :public, foo2.visibility
-      assert_equal :public, bar.visibility
-      assert_equal :private, bar2.visibility
-    end
+    assert_equal :private, foo.visibility
+    assert_equal :public, foo2.visibility
+    assert_equal :public, bar.visibility
+    assert_equal :private, bar2.visibility
   end
 
   def test_alias_method_stopdoc_nodoc
@@ -1102,16 +1087,8 @@ class TestRDocParserRuby < RDoc::TestCase
       end
     RUBY
     klass = @store.find_class_named 'Foo'
-    if accept_master_branch_bug?
-      a, r1, r2, w1, w2, rw1, rw2 = klass.attributes
-      a1 = a.dup
-      a2 = a.dup
-      a1.rw = a2.rw = 'R'
-      a2.name = 'attr2'
-    else
-      assert_equal 8, klass.attributes.size
-      a1, a2, r1, r2, w1, w2, rw1, rw2 = klass.attributes
-    end
+    assert_equal 8, klass.attributes.size
+    a1, a2, r1, r2, w1, w2, rw1, rw2 = klass.attributes
     assert_equal ['attr1', 'attr2'], [a1.name, a2.name]
     assert_equal ['reader1', 'reader2'], [r1.name, r2.name]
     assert_equal ['writer1', 'writer2'], [w1.name, w2.name]
@@ -1162,9 +1139,7 @@ class TestRDocParserRuby < RDoc::TestCase
       end
     RUBY
     klass = @store.find_class_named 'Foo'
-    unless accept_master_branch_bug?
-      assert_equal 4, klass.attributes.size
-    end
+    assert_equal 4, klass.attributes.size
   end
 
   def test_attributes_nodoc_track
@@ -1182,9 +1157,7 @@ class TestRDocParserRuby < RDoc::TestCase
       end
     RUBY
     klass = @store.find_class_named 'Foo'
-    unless accept_master_branch_bug?
-      assert_equal 12, klass.attributes.size
-    end
+    assert_equal 12, klass.attributes.size
   end
 
   def test_method_nodoc_stopdoc
@@ -1270,7 +1243,6 @@ class TestRDocParserRuby < RDoc::TestCase
     assert_equal ['reader1', 'reader2'], [r1.name, r2.name]
     assert_equal ['writer1', 'writer2'], [w1.name, w2.name]
     assert_equal ['accessor1', 'accessor2'], [rw1.name, rw2.name]
-    a1.rw = a2.rw = 'R' if accept_master_branch_bug?
     assert_equal ['R', 'R'], [a1.rw, a2.rw]
     assert_equal ['R', 'R'], [r1.rw, r2.rw]
     assert_equal ['W', 'W'], [w1.rw, w2.rw]
@@ -1325,7 +1297,6 @@ class TestRDocParserRuby < RDoc::TestCase
     assert_equal 'reader1', r.name
     assert_equal 'writer1', w.name
     assert_equal 'accessor1', rw.name
-    a.rw = 'R' if accept_master_branch_bug?
     assert_equal 'R', a.rw
     assert_equal 'R', r.rw
     assert_equal 'W', w.rw
@@ -1361,13 +1332,13 @@ class TestRDocParserRuby < RDoc::TestCase
     foo = @top_level.classes.first
     bar = foo.classes.first
     object = @top_level.find_class_or_module('Object')
-    assert_equal ['A', 'D', 'E', 'F'], foo.constants.map(&:name) unless accept_master_branch_bug?
+    assert_equal ['A', 'D', 'E', 'F'], foo.constants.map(&:name)
     assert_equal '(any expression 1)', foo.constants.first.value
     assert_equal ['B'], bar.constants.map(&:name)
-    assert_equal ['C', 'G'], object.constants.map(&:name) unless accept_master_branch_bug?
+    assert_equal ['C', 'G'], object.constants.map(&:name)
     all_constants = foo.constants + bar.constants + object.constants
-    assert_equal [@top_level] * 7, all_constants.map(&:file) unless accept_master_branch_bug?
-    assert_equal [2, 12, 13, 14, 7, 8, 18], all_constants.map(&:line) unless accept_master_branch_bug?
+    assert_equal [@top_level] * 7, all_constants.map(&:file)
+    assert_equal [2, 12, 13, 14, 7, 8, 18], all_constants.map(&:line)
   end
 
   def test_nodoc_constant_assigned_without_nodoc_comment
@@ -1467,10 +1438,9 @@ class TestRDocParserRuby < RDoc::TestCase
       def true.bar; end
       def false.baz; end
     RUBY
-    sep = accept_master_branch_bug? ? '::' : '#'
-    assert_equal "NilClass#{sep}foo", @store.find_class_named('NilClass').method_list.first.full_name
-    assert_equal "TrueClass#{sep}bar", @store.find_class_named('TrueClass').method_list.first.full_name
-    assert_equal "FalseClass#{sep}baz", @store.find_class_named('FalseClass').method_list.first.full_name
+    assert_equal "NilClass#foo", @store.find_class_named('NilClass').method_list.first.full_name
+    assert_equal "TrueClass#bar", @store.find_class_named('TrueClass').method_list.first.full_name
+    assert_equal "FalseClass#baz", @store.find_class_named('FalseClass').method_list.first.full_name
   end
 
   def test_include_extend
@@ -1499,7 +1469,6 @@ class TestRDocParserRuby < RDoc::TestCase
   end
 
   def test_include_extend_to_singleton_class
-    pend 'not implemented' if accept_master_branch_bug?
     util_parser <<~RUBY
       class Foo
         class << self
