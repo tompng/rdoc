@@ -1516,6 +1516,37 @@ class TestRDocParserRuby < RDoc::TestCase
     assert_equal ['I'], klass.extends.map(&:name)
   end
 
+  def test_include_with_module_nesting
+    util_parser <<~RUBY
+      module A
+        module M; end
+        module B
+          module M; end
+          module C
+            module M; end
+            module D
+              module M; end
+            end
+          end
+        end
+      end
+
+      module A::B
+        class C::D::Foo
+          include M
+        end
+      end
+      # TODO: make test pass with the following code appended
+      # module A::B::C
+      #   class D::Foo
+      #     include M
+      #   end
+      # end
+    RUBY
+    klass = @store.find_class_named 'A::B::C::D::Foo'
+    assert_equal 'A::B::M', klass.includes.first.module.full_name
+  end
+
   def test_require
     util_parser <<~RUBY
       require
