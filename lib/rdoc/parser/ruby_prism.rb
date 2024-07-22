@@ -166,7 +166,13 @@ class RDoc::Parser::Ruby < RDoc::Parser
     @visibility = :public
     @container = container
     @singleton = singleton
-    @module_nesting.push container unless singleton
+    unless singleton
+      @module_nesting.push container
+
+      # Need to update module parent chain to emulate Module.nesting.
+      # This mechanism is inaccurate and needs to be fixed.
+      container.parent = old_container
+    end
     yield container
   ensure
     @container = old_container
@@ -603,7 +609,7 @@ class RDoc::Parser::Ruby < RDoc::Parser
   # Adds a method defined by `def` syntax
 
   def add_method(name, receiver_name:, receiver_fallback_type:, visibility:, singleton:, signature:, tokens:, start_line:, end_line:)
-    receiver = receiver_name ? module_lookup(receiver_name, nil, create: receiver_fallback_type) : @container
+    receiver = receiver_name ? find_or_create_module_path(receiver_name, receiver_fallback_type) : @container
     meth = RDoc::AnyMethod.new(nil, name)
     if (comment = consecutive_comment(start_line))
       handle_consecutive_comment_directive(@container, comment)
@@ -645,24 +651,18 @@ class RDoc::Parser::Ruby < RDoc::Parser
     end
   end
 
-  # Finds module or class from a given module name
-  # If module or class does not exist, creates a module or a class according to `create` option.
+  # Find or create module or class from a given module name.
+  # If module or class does not exist, creates a module or a class according to `create_mode` argument.
 
-  def module_lookup(module_name, line_no, create: :module)
+  def find_or_create_module_path(module_name, create_mode)
     root_name, *path, name = module_name.split('::')
-    add_module = ->(mod, name, c) {
-      m =
-        case c
-        when :class
-          mod.add_class(RDoc::NormalClass, name, 'Object')
-        when :module
-          mod.add_module(RDoc::NormalModule, name)
-        else
-          return
-        end
-      m.store = @store
-      m.line = line_no
-      m
+    add_module = ->(mod, name, mode) {
+      case mode
+      when :class
+        mod.add_class(RDoc::NormalClass, name, 'Object').tap { |m| m.store = @store }
+      when :module
+        mod.add_module(RDoc::NormalModule, name).tap { |m| m.store = @store }
+      end
     }
     if root_name.empty?
       mod = @top_level
@@ -672,27 +672,40 @@ class RDoc::Parser::Ruby < RDoc::Parser
         mod = nesting.find_module_named(root_name)
         break if mod
       end
-      return mod || add_module.call(@top_level, root_name, create) unless name
-      mod ||= add_module.call(@top_level, root_name, create && :module)
+      return mod || add_module.call(@top_level, root_name, create_mode) unless name
+      mod ||= add_module.call(@top_level, root_name, :module)
     end
-    return unless mod
     path.each do |name|
-      mod = mod.find_module_named(name) || add_module.call(mod, name, create && :module)
-      return unless mod
+      mod = mod.find_module_named(name) || add_module.call(mod, name, :module)
     end
-    mod.find_module_named(name) || add_module.call(mod, name, create)
+    mod.find_module_named(name) || add_module.call(mod, name, create_mode)
   end
 
-  # Given a module name `"Foo::Bar::Baz"`, returns a pair of owner module and constant name `[Foo::Bar, "Baz"]`
+  # Resolves constant path to a full path by searching module nesting
 
-  def constant_owner_name(module_name, line_no)
-    const_path, colon, name = module_name.rpartition('::')
+  def resolve_constant_path(constant_path)
+    owner_name, path = constant_path.split('::', 2)
+    return constant_path if owner_name.empty? # ::Foo, ::Foo::Bar
+    mod = nil
+    @module_nesting.reverse_each do |nesting|
+      mod = nesting.find_module_named(owner_name)
+      break if mod
+    end
+    mod ||= @top_level.find_module_named(owner_name)
+    [mod.full_name, path].compact.join('::') if mod
+  end
+
+  # Returns a pair of owner module and constant name from a given constant path.
+  # Creates owner module if it does not exist.
+
+  def find_or_create_constant_owner_name(constant_path)
+    const_path, colon, name = constant_path.rpartition('::')
     if colon.empty? # class Foo
       [@container, name]
     elsif const_path.empty? # class ::Foo
       [@top_level, name]
     else # `class Foo::Bar` or `class ::Foo::Bar`
-      [module_lookup(const_path, line_no), name]
+      [find_or_create_module_path(const_path, :module), name]
     end
   end
 
@@ -701,7 +714,7 @@ class RDoc::Parser::Ruby < RDoc::Parser
   def add_constant(constant_name, rhs_name, start_line, end_line)
     comment = consecutive_comment(start_line)
     handle_consecutive_comment_directive(@container, comment)
-    owner, name = constant_owner_name(constant_name, start_line)
+    owner, name = find_or_create_constant_owner_name(constant_name)
     constant = RDoc::Constant.new(name, rhs_name, comment)
     constant.store = @store
     constant.line = start_line
@@ -730,24 +743,24 @@ class RDoc::Parser::Ruby < RDoc::Parser
     handle_consecutive_comment_directive(@container, comment)
     return unless @container.document_children
 
-    owner, name = constant_owner_name(module_name, start_line)
-    created = false
+    owner, name = find_or_create_constant_owner_name(module_name)
     if is_class
-      mod = owner.classes_hash[name]
-      superclass = module_lookup(superclass_name, start_line, create: nil) if superclass_name
-      if mod
-        mod.superclass = superclass || superclass_name if superclass_name
-      else
-        created = true
-        mod = owner.add_class(RDoc::NormalClass, name, superclass_name || '::Object')
-        mod.superclass = superclass if superclass
+      mod = owner.classes_hash[name] || owner.add_class(RDoc::NormalClass, name, superclass_name || '::Object')
+
+      # RDoc::NormalClass resolves superclass name despite of the lack of module nesting information.
+      # We need to fix it when RDoc::NormalClass resolved to a wrong constant name
+      if superclass_name
+        superclass_full_path = resolve_constant_path(superclass_name)
+        superclass = @store.find_class_or_module(superclass_full_path) if superclass_full_path
+        superclass_full_path ||= superclass_name
+        if superclass
+          mod.superclass = superclass
+        elsif mod.superclass.is_a?(String) && mod.superclass != superclass_full_path
+          mod.superclass = superclass_full_path
+        end
       end
     else
-      mod = owner.modules_hash[name]
-      unless mod
-        created = true
-        mod = owner.add_module(RDoc::NormalModule, name)
-      end
+      mod = owner.modules_hash[name] || owner.add_module(RDoc::NormalModule, name)
     end
 
     mod.store = @store
@@ -911,17 +924,13 @@ class RDoc::Parser::Ruby < RDoc::Parser
       when Prism::ConstantWriteNode
         # Accept `class << (NameErrorCheckers = Object.new)` as a module which is not actually a module
         mod = @scanner.container.add_module(RDoc::NormalModule, expression.name.to_s)
-        expression_name = expression.name.to_s
       when Prism::ConstantPathNode, Prism::ConstantReadNode
         expression_name = constant_path_string(expression)
+        # If a constant_path does not exist, RDoc creates a module
+        mod = @scanner.find_or_create_module_path(expression_name, :module) if expression_name
       when Prism::SelfNode
-        if @scanner.container == @top_level
-          expression_name = 'Object'
-        else
-          mod = @scanner.container
-        end
+        mod = @scanner.container if @scanner.container != @top_level
       end
-      mod ||= @scanner.module_lookup(expression_name, node.location.start_line) if expression_name
       if mod
         @scanner.with_container(mod, singleton: true) do
           super
