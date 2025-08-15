@@ -23,7 +23,7 @@ class BlockParser
         DUMMY
 
   rule
-    document : blocks { result = RDoc::Markup::Document.new(*val[0]) }
+    document : blocks { result = RDoc::Markup::Document.new(*val[0]).itself }
              |        { raise ParseError, "file empty" }
              ;
 
