@@ -230,6 +230,56 @@ lines, one line per element. Lines are assumed to be separated by _sep_.
     assert_equal("clock_actualtimes", clockres.inspect)
   end
 
+  %w[
+    CLOCK_THREAD_CPUTIME_ID CLOCK_PROCESS_CPUTIME_ID
+    CLOCK_MONOTONIC
+  ].find do |c|
+    if Process.const_defined?(c)
+      [c.to_sym, Process.const_get(c)].find do |clk|
+        begin
+          Process.clock_gettime(clk)
+        rescue
+          # Constants may be defined but not implemented, e.g., mingw.
+        else
+          unless Process.clock_getres(clk) < 1.0e-03
+            next # needs msec precision
+          end
+          PERFORMANCE_CLOCK = clk
+        end
+      end
+    end
+  end
+  
+  def test_perf_clock
+    assert_equal('actual PERFORMANCE_CLOCK:', PERFORMANCE_CLOCK)
+  end
+
+  def test_clock_actual_res_sym
+    clockres = %i[
+      CLOCK_THREAD_CPUTIME_ID CLOCK_PROCESS_CPUTIME_ID
+      CLOCK_MONOTONIC
+    ].map do |c|
+      begin
+        clk = c
+        t0 = t = Process.clock_gettime(clk)
+        cnt = 0
+        times = [t]
+        while times.size < 10
+          t2 = Process.clock_gettime(clk)
+          if t2 != t
+            times << t2
+            t = t2
+          end
+          cnt += 1
+        end
+        [cnt, times].inspect
+      rescue => e
+        e.message
+      end
+    end
+    assert_equal("clock_actualtimes", clockres.inspect)
+  end
+
   def test_force_encoding
     @comment = RDoc::Encoding.change_encoding @comment, Encoding::UTF_8
 
