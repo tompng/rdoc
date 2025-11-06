@@ -189,6 +189,21 @@ lines, one line per element. Lines are assumed to be separated by _sep_.
     end
   end
 
+  def test_clock_res
+    clockres = %w[
+      CLOCK_THREAD_CPUTIME_ID CLOCK_PROCESS_CPUTIME_ID
+      CLOCK_MONOTONIC FOO
+    ].map do |c|
+      begin
+        clk = Process.const_get c
+        Process.clock_getres(clk)
+      rescue => e
+        e.message
+      end
+    end
+    assert_equal("clocktime", clockres.inspect)
+  end
+
   def test_force_encoding
     @comment = RDoc::Encoding.change_encoding @comment, Encoding::UTF_8
 
