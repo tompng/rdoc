@@ -206,12 +206,20 @@ lines, one line per element. Lines are assumed to be separated by _sep_.
 
   def test_clock_sym_val
     codes = %w[
+      Process.clock_getres(Process::CLOCK_THREAD_CPUTIME_ID)
+      Process.clock_getres(:CLOCK_THREAD_CPUTIME_ID)
+      Process.clock_gettime(Process::CLOCK_THREAD_CPUTIME_ID)
+      Process.clock_gettime(:CLOCK_THREAD_CPUTIME_ID)
+      Process.clock_getres(Process::CLOCK_PROCESS_CPUTIME_ID)
+      Process.clock_getres(:CLOCK_PROCESS_CPUTIME_ID)
+      Process.clock_gettime(Process::CLOCK_PROCESS_CPUTIME_ID)
+      Process.clock_gettime(:CLOCK_PROCESS_CPUTIME_ID)
       Process.clock_getres(Process::CLOCK_MONOTONIC)
       Process.clock_getres(:CLOCK_MONOTONIC)
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
       Process.clock_gettime(:CLOCK_MONOTONIC)
     ]
-    assert_equal('result', codes.to_h{|code| [code, eval(code)]})
+    assert_equal('result', codes.to_h{|code| [code, (eval(code) rescue $!.to_s)]})
   end
 
   def test_clock_actual_res
