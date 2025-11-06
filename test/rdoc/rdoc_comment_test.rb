@@ -204,6 +204,32 @@ lines, one line per element. Lines are assumed to be separated by _sep_.
     assert_equal("clocktime", clockres.inspect)
   end
 
+  def test_clock_actual_res
+    clockres = %w[
+      CLOCK_THREAD_CPUTIME_ID CLOCK_PROCESS_CPUTIME_ID
+      CLOCK_MONOTONIC
+    ].map do |c|
+      begin
+        clk = Process.const_get c
+        t0 = t = Process.clock_gettime(clk)
+        cnt = 0
+        times = [t]
+        while times.size < 10
+          t2 = Process.clock_gettime(clk)
+          if t2 != t
+            times << t2
+            t = t2
+          end
+          cnt += 1
+        end
+        [cnt, times].inspect
+      rescue => e
+        e.message
+      end
+    end
+    assert_equal("clock_actualtimes", clockres.inspect)
+  end
+
   def test_force_encoding
     @comment = RDoc::Encoding.change_encoding @comment, Encoding::UTF_8
 
