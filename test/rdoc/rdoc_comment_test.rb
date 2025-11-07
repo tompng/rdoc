@@ -189,6 +189,14 @@ lines, one line per element. Lines are assumed to be separated by _sep_.
     end
   end
 
+  def test_testunit
+    assert_equal 'Test::Unit::CoreAssertions::PERFORMANCE_CLOCK', Test::Unit::CoreAssertions::PERFORMANCE_CLOCK
+  end
+
+  def test_testuunit_clocks
+    assert_equal 'get PERFORMANCE_CLOCK times', 100.times.map{Process.clock_gettime(PERFORMANCE_CLOCK)}
+  end
+
   def test_clock_res
     clockres = %w[
       CLOCK_THREAD_CPUTIME_ID CLOCK_PROCESS_CPUTIME_ID
@@ -262,14 +270,14 @@ lines, one line per element. Lines are assumed to be separated by _sep_.
           unless Process.clock_getres(clk) < 1.0e-03
             next # needs msec precision
           end
-          PERFORMANCE_CLOCK = clk
+          THE_PERFORMANCE_CLOCK = clk
         end
       end
     end
   end
   
   def test_perf_clock
-    assert_equal('actual PERFORMANCE_CLOCK:', PERFORMANCE_CLOCK)
+    assert_equal('actual THE_PERFORMANCE_CLOCK:', THE_PERFORMANCE_CLOCK)
   end
 
   def test_clock_actual_res_sym
