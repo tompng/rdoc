@@ -736,6 +736,13 @@ EXPECTED
     assert_equal expected, result
   end
 
+  def test_convert_TIDYLINK_url_unescape
+    # markdown: [{label}](http://example.com/_foo?q=bar+baz[])
+    result = @to.convert '{\{label\}}[http://example.com/\_foo?q\=bar\+baz\[\]]'
+    expected = "\n<p><a href=\"http://example.com/_foo?q=bar+baz[]\">{label}</a></p>\n"
+    assert_equal expected, result
+  end
+
   def test_convert_TIDYLINK_with_code_label
     result = @to.convert '{Link to +Foo+}[https://example.com]'
 

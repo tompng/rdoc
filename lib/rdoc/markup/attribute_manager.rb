@@ -242,6 +242,13 @@ class RDoc::Markup::AttributeManager
     end
   end
 
+
+  # TODO: Fix flow of parsing rdoc format and remove this method.
+  # AttributeManager#flow should only unescape plain-text parts.
+  def unescape_urls
+    @str.gsub!(RDoc::Markup::ToHtml::ESCAPED_HYPERLINK_REGEXP) {|s| s.gsub(/\\(.)/, '\1') }
+  end
+
   ##
   # Escapes regexp handling sequences of text to prevent conversion to RDoc
 
@@ -333,6 +340,7 @@ class RDoc::Markup::AttributeManager
   def flow(str)
     @str = str.dup
 
+    unescape_urls
     mask_protected_sequences
     protect_code_markup
 

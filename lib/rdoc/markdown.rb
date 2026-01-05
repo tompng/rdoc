@@ -688,6 +688,19 @@ class RDoc::Markdown
     end
   end
 
+  # Escape text that has special meaning in RDoc format
+
+  def rdoc_escape(text)
+    text.gsub(/[_*+=<\[\]{}]|\\[^A-Z]|\\\z/) {|s| "\\#{s}" }
+  end
+
+  # Escape link url that contains brackets.
+  # Brackets needs escape because link url will be surrounded by `[]` in RDoc format.
+
+  def rdoc_link_url_escape(text)
+    text.gsub(/[\[\]\\]/) {|s| "\\#{s}" }
+  end
+
   ##
   # :category: Extensions
   #
@@ -9731,7 +9744,7 @@ class RDoc::Markdown
     return _tmp
   end
 
-  # Str = @StartList:a < @NormalChar+ > { a = text } (StrChunk:c { a << c })* { a }
+  # Str = @StartList:a < @NormalChar+ > { a = text } (StrChunk:c { a << c })* { rdoc_escape(a) }
   def _Str
 
     _save = self.pos
@@ -9792,7 +9805,7 @@ class RDoc::Markdown
         self.pos = _save
         break
       end
-      @result = begin;  a ; end
+      @result = begin;  rdoc_escape(a) ; end
       _tmp = true
       unless _tmp
         self.pos = _save
@@ -9894,7 +9907,7 @@ class RDoc::Markdown
     return _tmp
   end
 
-  # EscapedChar = "\\" !@Newline < /[:\\`|*_{}\[\]()#+.!><-]/ > { text }
+  # EscapedChar = "\\" !@Newline < /[:\\`|*_{}\[\]()#+.!><-]/ > { rdoc_escape(text) }
   def _EscapedChar
 
     _save = self.pos
@@ -9921,7 +9934,7 @@ class RDoc::Markdown
         self.pos = _save
         break
       end
-      @result = begin;  text ; end
+      @result = begin;  rdoc_escape(text) ; end
       _tmp = true
       unless _tmp
         self.pos = _save
@@ -10122,7 +10135,7 @@ class RDoc::Markdown
     return _tmp
   end
 
-  # Symbol = < @SpecialChar > { text }
+  # Symbol = < @SpecialChar > { rdoc_escape(text) }
   def _Symbol
 
     _save = self.pos
@@ -10136,7 +10149,7 @@ class RDoc::Markdown
         self.pos = _save
         break
       end
-      @result = begin;  text ; end
+      @result = begin;  rdoc_escape(text) ; end
       _tmp = true
       unless _tmp
         self.pos = _save
@@ -11189,7 +11202,7 @@ class RDoc::Markdown
     return _tmp
   end
 
-  # ExplicitLink = ExplicitLinkWithLabel:a { "{#{a[:label]}}[#{a[:link]}]" }
+  # ExplicitLink = ExplicitLinkWithLabel:a { "{#{a[:label]}}[#{rdoc_link_url_escape(a[:link])}]" }
   def _ExplicitLink
 
     _save = self.pos
@@ -11200,7 +11213,7 @@ class RDoc::Markdown
         self.pos = _save
         break
       end
-      @result = begin;  "{#{a[:label]}}[#{a[:link]}]" ; end
+      @result = begin;  "{#{a[:label]}}[#{rdoc_link_url_escape(a[:link])}]" ; end
       _tmp = true
       unless _tmp
         self.pos = _save
@@ -16563,15 +16576,15 @@ class RDoc::Markdown
   Rules[:_Inlines] = rule_info("Inlines", "(!@Endline Inline:i { i } | @Endline:c !(&{ github? } Ticks3 /[^`\\n]*$/) &Inline { c })+:chunks @Endline? { chunks }")
   Rules[:_Inline] = rule_info("Inline", "(Str | @Endline | UlOrStarLine | @Space | Strong | Emph | Strike | Image | Link | NoteReference | InlineNote | Code | RawHtml | Entity | EscapedChar | Symbol)")
   Rules[:_Space] = rule_info("Space", "@Spacechar+ { \" \" }")
-  Rules[:_Str] = rule_info("Str", "@StartList:a < @NormalChar+ > { a = text } (StrChunk:c { a << c })* { a }")
+  Rules[:_Str] = rule_info("Str", "@StartList:a < @NormalChar+ > { a = text } (StrChunk:c { a << c })* { rdoc_escape(a) }")
   Rules[:_StrChunk] = rule_info("StrChunk", "< (@NormalChar | /_+/ &Alphanumeric)+ > { text }")
-  Rules[:_EscapedChar] = rule_info("EscapedChar", "\"\\\\\" !@Newline < /[:\\\\`|*_{}\\[\\]()\#+.!><-]/ > { text }")
+  Rules[:_EscapedChar] = rule_info("EscapedChar", "\"\\\\\" !@Newline < /[:\\\\`|*_{}\\[\\]()\#+.!><-]/ > { rdoc_escape(text) }")
   Rules[:_Entity] = rule_info("Entity", "(HexEntity | DecEntity | CharEntity):a { a }")
   Rules[:_Endline] = rule_info("Endline", "(@LineBreak | @TerminalEndline | @NormalEndline)")
   Rules[:_NormalEndline] = rule_info("NormalEndline", "@Sp @Newline !@BlankLine !\">\" !AtxStart !(Line /={1,}|-{1,}/ @Newline) { \"\\n\" }")
   Rules[:_TerminalEndline] = rule_info("TerminalEndline", "@Sp @Newline @Eof")
   Rules[:_LineBreak] = rule_info("LineBreak", "\"  \" @NormalEndline { RDoc::Markup::HardBreak.new }")
-  Rules[:_Symbol] = rule_info("Symbol", "< @SpecialChar > { text }")
+  Rules[:_Symbol] = rule_info("Symbol", "< @SpecialChar > { rdoc_escape(text) }")
   Rules[:_UlOrStarLine] = rule_info("UlOrStarLine", "(UlLine | StarLine):a { a }")
   Rules[:_StarLine] = rule_info("StarLine", "(< /\\*{4,}/ > { text } | < @Spacechar /\\*+/ &@Spacechar > { text })")
   Rules[:_UlLine] = rule_info("UlLine", "(< /_{4,}/ > { text } | < @Spacechar /_+/ &@Spacechar > { text })")
@@ -16588,7 +16601,7 @@ class RDoc::Markdown
   Rules[:_ReferenceLink] = rule_info("ReferenceLink", "(ReferenceLinkDouble | ReferenceLinkSingle)")
   Rules[:_ReferenceLinkDouble] = rule_info("ReferenceLinkDouble", "Label:content < Spnl > !\"[]\" Label:label { link_to content, label, text }")
   Rules[:_ReferenceLinkSingle] = rule_info("ReferenceLinkSingle", "Label:content < (Spnl \"[]\")? > { link_to content, content, text }")
-  Rules[:_ExplicitLink] = rule_info("ExplicitLink", "ExplicitLinkWithLabel:a { \"{\#{a[:label]}}[\#{a[:link]}]\" }")
+  Rules[:_ExplicitLink] = rule_info("ExplicitLink", "ExplicitLinkWithLabel:a { \"{\#{a[:label]}}[\#{rdoc_link_url_escape(a[:link])}]\" }")
   Rules[:_ExplicitLinkWithLabel] = rule_info("ExplicitLinkWithLabel", "Label:label \"(\" @Sp Source:link Spnl Title @Sp \")\" { { label: label, link: link } }")
   Rules[:_Source] = rule_info("Source", "(\"<\" < SourceContents > \">\" | < SourceContents >) { text }")
   Rules[:_SourceContents] = rule_info("SourceContents", "((!\"(\" !\")\" !\">\" Nonspacechar)+ | \"(\" SourceContents \")\")*")

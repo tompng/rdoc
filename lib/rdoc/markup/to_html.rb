@@ -63,15 +63,17 @@ class RDoc::Markup::ToHtml < RDoc::Markup::Formatter
   # These methods are used by regexp handling markup added by RDoc::Markup#add_regexp_handling.
 
   # :nodoc:
-  URL_CHARACTERS_REGEXP_STR = /[A-Za-z0-9\-._~:\/\?#\[\]@!$&'\(\)*+,;%=]/.source
+  URL_CHARACTERS_REGEXP_CHAR_CLASS = "A-Za-z0-9\-._~:\\/\?#\\[\\]@!$&'\\(\\)*+,;%="
+  HYPERLINK_PREFIX_REGEXP_STR = '(?:link:|https?:|mailto:|ftp:|irc:|www\.)'
+  HYPERLINK_REGEXP = /#{HYPERLINK_PREFIX_REGEXP_STR}[#{URL_CHARACTERS_REGEXP_CHAR_CLASS}]+\w/
+  ESCAPED_HYPERLINK_REGEXP = /#{HYPERLINK_PREFIX_REGEXP_STR}[#{URL_CHARACTERS_REGEXP_CHAR_CLASS}\\]+\w/
 
   ##
   # Adds regexp handlings.
 
   def init_regexp_handlings
     # external links
-    @markup.add_regexp_handling(/(?:link:|https?:|mailto:|ftp:|irc:|www\.)#{URL_CHARACTERS_REGEXP_STR}+\w/,
-                                :HYPERLINK)
+    @markup.add_regexp_handling(HYPERLINK_REGEXP, :HYPERLINK)
     init_link_notation_regexp_handlings
   end
 
@@ -133,7 +135,8 @@ class RDoc::Markup::ToHtml < RDoc::Markup::Formatter
   #   Reference to a local file relative to the output directory.
 
   def handle_regexp_HYPERLINK(target)
-    url = CGI.escapeHTML(target.text)
+    url = target.text.gsub(/\\(.)/, '\1')
+    url = CGI.escapeHTML(url)
 
     gen_url url, url
   end
@@ -395,6 +398,7 @@ class RDoc::Markup::ToHtml < RDoc::Markup::Formatter
 
       text = text.sub %r%^#{scheme}:/*%i, ''
       text = text.sub %r%^[*\^](\d+)$%,   '\1'
+      url = url.gsub(/\\([\[\]\\])/, '\1')
 
       link = "<a#{id} href=\"#{url}\">#{text}</a>"
 
