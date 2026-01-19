@@ -116,8 +116,41 @@ class RDoc::Markup::Formatter
     end
 
     output << [chars[pos..].join, false] if pos < chars.size
+    output2 = apply_regexp_handling_old(text)
+    raise({ output: output, output2: output2, text: text, matched: matched }.inspect) if output != output2
     output
   end
+
+ 
+  def apply_regexp_handling_old(text)
+    output = []
+    start = 0
+    loop do
+      pos = text.size
+      matched_name = matched_text = nil
+      @markup.regexp_handlings.each do |pattern, name|
+        m = text.match(pattern, start)
+        next unless m
+        idx = m[1] ? 1 : 0
+        if m.begin(idx) < pos
+          pos = m.begin(idx)
+          matched_text = m[idx]
+          matched_name = name
+        end
+      end
+      output << [text[start...pos], false] if pos > start
+      if matched_name
+        handled = public_send(:"handle_regexp_#{matched_name}", matched_text)
+        output << [handled, true]
+        start = pos + matched_text.size
+      else
+        start = pos
+      end
+      break if pos == text.size
+    end
+    output
+  end
+
 
   # Called when processing plain text while traversing inline nodes from handle_inline.
   # +text+ may need proper escaping.
