@@ -70,7 +70,7 @@ class RDoc::MethodAttr < RDoc::CodeObject
   #
   # Usually this is called by super from a subclass.
 
-  def initialize(name, singleton: false)
+  def initialize(_unused, name, singleton: false)
     super()
 
     @name = name

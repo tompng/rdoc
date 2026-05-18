@@ -29,7 +29,7 @@ class RDoc::Alias < RDoc::CodeObject
   # Creates a new Alias that aliases +old_name+
   # to +new_name+, has +comment+ and is a +singleton+ context.
 
-  def initialize(old_name, new_name, comment, singleton: false)
+  def initialize(_unused, old_name, new_name, comment, singleton: false)
     super()
 
     @singleton = singleton
